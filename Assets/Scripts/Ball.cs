@@ -24,6 +24,8 @@ public class Ball : MonoBehaviour
     public float keeperTrapMultiplier = 1.6f;  // вратарь ловит мячи быстрее
     public float bodyRadius = 0.5f;            // радиус «тела» игрока для отскоков
     public float ownerBonus = 0.35f;           // чтобы отобрать мяч, нужно быть ближе владельца на столько метров
+    public float tackleReach = 0.5f;           // отбор: дополнительный радиус
+    public float tackleBonus = 0.6f;           // отбор: перевес в борьбе за мяч
 
     public Rigidbody Body { get; private set; }
     public SphereCollider Col { get; private set; }
@@ -82,12 +84,14 @@ public class Ball : MonoBehaviour
             {
                 if (!p.CanControlBall) continue;
                 float dist = Flat(Body.position - p.Position).magnitude;
-                if (dist > p.controlRadius) continue;
+                // Отбор (B / Круг): на короткое время длиннее «нога» и приоритет над владельцем
+                float reach = p.controlRadius + (p.Tackling ? tackleReach : 0f);
+                if (dist > reach) continue;
 
                 float maxRel = trapSpeed * (p.role == Role.Keeper ? keeperTrapMultiplier : 1f);
                 if (p != Owner && Flat(Body.linearVelocity - p.Velocity).magnitude > maxRel) continue; // слишком быстрый
 
-                float score = dist - (p == Owner ? ownerBonus : 0f);
+                float score = dist - (p == Owner ? ownerBonus : 0f) - (p.Tackling ? tackleBonus : 0f);
                 if (score < bestScore) { bestScore = score; best = p; }
             }
         }
@@ -154,6 +158,7 @@ public class Ball : MonoBehaviour
     public void Kick(Vector3 dir, float power, float lift, Player by)
     {
         Body.isKinematic = false;
+        if (Owner != null && Owner != by) Owner.OnLostBall();   // выбили подкатом — бывший владелец не подхватит сразу
         Owner = null;
         lastTouch = by;
         dir = Flat(dir).normalized;

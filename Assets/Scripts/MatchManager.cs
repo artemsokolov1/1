@@ -3,15 +3,21 @@ using UnityEngine;
 
 public enum SetPieceType { Kickoff, ThrowIn, Corner, GoalKick }
 
+/// <summary>Итог матча для экрана результата в меню.</summary>
+public class MatchResult
+{
+    public string title, score;
+    public bool good;
+    public List<string> lines = new List<string>();
+}
+
 /// <summary>
-/// Ядро матча: строит поле с разметкой и воротами, спавнит 10 игроков, следит за правилами
-/// (гол, аут, угловой, удар от ворот, розыгрыш с центра), считает счёт и время,
-/// управляет переключением твоего игрока, ведёт изометрическую камеру и рисует HUD.
-/// Вешается на пустой объект "Match"; в инспекторе нужно указать Ball и Main Camera.
-/// Ось X — вдоль поля: красные (ты) защищают ворота на -X и атакуют в +X, синие — наоборот.
+/// Ядро игры: поле, игроки, правила (гол, аут, угловой, от ворот), счёт и время, переключение игрока,
+/// камера (сбоку / изометрия / облёт в меню), пауза, награды и возврат в меню. HUD матча рисуется здесь,
+/// меню и пауза — в MainMenu.
+/// Ось X — вдоль поля: твоя команда защищает ворота на -X и атакует в +X.
 ///
-/// Фазы: Play (мяч в игре, идёт время) → Stopped (пауза после гола/аута, все стоят)
-///       → SetPiece (мяч на точке, исполнитель разыгрывает) → Play ... → Over.
+/// Фазы матча: Play (мяч в игре) → Stopped (пауза после гола/аута) → SetPiece (стандарт) → Play ... → Over.
 /// </summary>
 public class MatchManager : MonoBehaviour
 {
@@ -26,42 +32,58 @@ public class MatchManager : MonoBehaviour
     public float goalWidth = 6f, goalHeight = 2f, goalDepth = 2f;
     public float boxDepth = 5f, boxHalfWidth = 5f;   // штрафная
 
-    [Header("Матч")]
-    public float matchTime = 60f;       // «чистое» время: в паузах и на стандартах таймер стоит
+    [Header("Паузы")]
     public float goalPause = 1.5f;
     public float outPause = 1f;
+    public float resultScreenTime = 4f;
 
-    [Header("Камера (изометрия)")]
-    public Vector3 camAngles = new Vector3(45f, 45f, 0f);
-    public float camSize = 11f, camDistance = 40f, camSmooth = 4f;
+    [Header("Камера сбоку (трансляция)")]
+    public float sidePitch = 50f, sideFov = 40f, sideDistance = 30f;
+    [Header("Камера изометрия")]
+    public Vector3 isoAngles = new Vector3(45f, 45f, 0f);
+    public float isoSize = 11f, isoDistance = 40f;
+    public float camSmooth = 4f;
 
     [HideInInspector] public List<Player> players = new List<Player>();
     [HideInInspector] public Player controlled;      // кем ты сейчас управляешь
     [HideInInspector] public Player passReceiver;    // кому летит пас (он выходит на мяч)
     public const Team HumanTeam = Team.Red;
 
-    enum Phase { Play, Stopped, SetPiece, Over }
-    Phase phase;
-    float phaseTimer, timeLeft, passTimer;
-    int scoreRed, scoreBlue;
-    string banner, hint;
+    public MatchResult LastResult { get; set; }       // показывается в меню после матча
+    public bool InMenu => app == AppState.Menu;
+    public bool Paused => paused;
+    public bool InMatch => app == AppState.Match;
 
-    // текущий / следующий стандарт
-    SetPieceType nextType;
+    enum AppState { Menu, Match }
+    enum Phase { Play, Stopped, SetPiece, Over }
+    AppState app = AppState.Menu;
+    Phase phase;
+    bool paused;
+    float phaseTimer, timeLeft, passTimer, resultTimer;
+    float keeperRushUntil, teammatePressUntil;
+    int scoreRed, scoreBlue;
+    string banner;
+    int practiceIndex = -1;
+
+    SetPieceType spType, nextType;
     Team spTeam, nextTeam;
     Vector3 spSpot, nextSpot;
-    Player taker;
+    Player taker, pressHelper;
 
-    Collider goalLeft, goalRight;                    // триггеры ворот красных (-X) и синих (+X)
+    Collider goalLeft, goalRight;                    // триггеры ворот твоей команды (-X) и соперника (+X)
     readonly Player[] chaser = new Player[2];
-    Transform marker, aimArrow, passRing;            // жёлтый шар над тобой, стрелка прицела, кольцо под адресатом паса
+    Transform marker, aimArrow, passRing, passLine;  // индикаторы твоего игрока и паса
 
-    public bool Stopped => phase == Phase.Stopped || phase == Phase.Over;
+    public bool Stopped => app == AppState.Menu || paused || phase == Phase.Stopped || phase == Phase.Over;
     public bool SetPieceActive => phase == Phase.SetPiece;
+    public SetPieceType SetPieceKind => spType;
     public Team SetPieceTeam => spTeam;
     public Vector3 SetPieceSpot => spSpot;
     public float SetPieceTime => phaseTimer;
     public bool IsTaker(Player p) => phase == Phase.SetPiece && taker == p;
+    public bool KeeperRush => Time.time < keeperRushUntil;
+    public bool IsPressHelper(Player p) => Time.time < teammatePressUntil && pressHelper == p;
+    public float AiTackleChance => new[] { 0.2f, 0.35f, 0.5f }[Profile.Current.difficulty];
     float L => length * 0.5f;
     float W => width * 0.5f;
 
@@ -109,31 +131,82 @@ public class MatchManager : MonoBehaviour
     void Start()
     {
         if (cam == null) cam = Camera.main;
+        if (GetComponent<MainMenu>() == null) gameObject.AddComponent<MainMenu>();
         BuildArena();
-        SpawnTeams();
         CreateIndicators();
-
-        cam.orthographic = true;
-        cam.orthographicSize = camSize;
-        cam.transform.rotation = Quaternion.Euler(camAngles);
-        cam.transform.position = -cam.transform.forward * camDistance;
-
-        Restart();
+        EnterMenu();
     }
 
-    void Restart()
+    // ------------------------------------------------------------ меню ↔ матч
+
+    /// <summary>Главное меню: на фоне стоят команды, камера облетает твоего игрока.</summary>
+    public void EnterMenu()
     {
-        scoreRed = scoreBlue = 0;
-        timeLeft = matchTime;
+        Time.timeScale = 1f;
+        paused = false;
+        app = AppState.Menu;
         banner = null;
+        SpawnTeams(MatchMode.Normal);
+        ball.Hold(Vector3.zero);
+        ApplyCameraProjection();
+    }
+
+    /// <summary>Старт матча или тренировки (practice — индекс в Catalog.Practices, -1 — обычный матч).</summary>
+    public void StartMatch(MatchMode m, int practice = -1)
+    {
+        Time.timeScale = 1f;
+        paused = false;
+        practiceIndex = practice;
+        app = AppState.Match;
+        SpawnTeams(m);
+        ApplyCameraProjection();
+        RestartMatch();
+    }
+
+    public void RestartMatch()
+    {
+        Time.timeScale = 1f;
+        paused = false;
+        scoreRed = scoreBlue = 0;
+        timeLeft = practiceIndex >= 0 ? Catalog.Practices[practiceIndex].time
+                                      : Catalog.MatchLengths[Profile.Current.matchLength];
+        banner = null;
+        LastResult = null;
         BeginSetPiece(SetPieceType.Kickoff, HumanTeam, Vector3.zero);
+    }
+
+    public void Pause()
+    {
+        if (!InMatch || phase == Phase.Over) return;
+        paused = true;
+        Time.timeScale = 0f;
+    }
+
+    public void Resume()
+    {
+        paused = false;
+        Time.timeScale = 1f;
+    }
+
+    public void QuitToMenu() => EnterMenu();
+
+    /// <summary>Перекрасить команды и мяч после покупок/смены формы в меню.</summary>
+    public void RefreshLook()
+    {
+        if (InMenu) SpawnTeams(MatchMode.Normal);
+        Paint(ball.gameObject, Catalog.Balls[Profile.Current.ballSkin].color);
     }
 
     // ------------------------------------------------------------ цикл
 
     void Update()
     {
-        if (GameInput.RestartPressed()) Restart();
+        // Start / Esc — пауза. «Назад» (B) на паузе обрабатывает меню.
+        if (InMatch && phase != Phase.Over && GameInput.Down(Btn.Pause))
+        {
+            if (paused) Resume(); else Pause();
+        }
+        if (InMenu || paused) return;
 
         switch (phase)
         {
@@ -151,6 +224,11 @@ public class MatchManager : MonoBehaviour
                 if (timeLeft <= 0f) { EndMatch(); break; }
                 CheckOut();
                 break;
+
+            case Phase.Over:
+                resultTimer -= Time.unscaledDeltaTime;
+                if (resultTimer <= 0f || GameInput.Down(Btn.Confirm)) QuitToMenu();
+                break;
         }
 
         if (passReceiver != null && (passTimer -= Time.deltaTime) <= 0f) passReceiver = null;
@@ -159,22 +237,60 @@ public class MatchManager : MonoBehaviour
 
     void LateUpdate()
     {
-        // Камера: фиксированный изометрический угол, позиция плавно тянется за мячом
-        Vector3 focus = ball.transform.position;
-        focus.y = 0f;
-        Vector3 wanted = focus - cam.transform.forward * camDistance;
-        cam.transform.position = Vector3.Lerp(cam.transform.position, wanted, 1f - Mathf.Exp(-camSmooth * Time.deltaTime));
-
+        UpdateCamera();
         UpdateIndicators();
     }
 
-    void EndMatch()
+    // ------------------------------------------------------------ камера
+
+    void ApplyCameraProjection()
     {
-        timeLeft = 0f;
-        phase = Phase.Over;
-        hint = null;
-        banner = (scoreRed == scoreBlue ? "Ничья" : scoreRed > scoreBlue ? "Победа красных" : "Победа синих")
-                 + $" {scoreRed}:{scoreBlue}\nR — сыграть ещё";
+        bool iso = InMatch && Profile.Current.cameraMode == 1;
+        cam.orthographic = iso;
+        if (iso) { cam.orthographicSize = isoSize; cam.transform.rotation = Quaternion.Euler(isoAngles); }
+        else cam.fieldOfView = InMenu ? 35f : sideFov;
+    }
+
+    void UpdateCamera()
+    {
+        float k = 1f - Mathf.Exp(-camSmooth * Time.unscaledDeltaTime);
+        Vector3 b = ball.transform.position;
+
+        if (InMenu)
+        {
+            // Облёт твоего игрока: камера качается перед ним
+            Vector3 target = controlled != null ? controlled.Position + Vector3.up * 1.1f : Vector3.up;
+            float a = (15f + Mathf.Sin(Time.unscaledTime * 0.25f) * 25f) * Mathf.Deg2Rad;
+            Vector3 pos = target + new Vector3(Mathf.Cos(a) * 5.5f, 0.9f, Mathf.Sin(a) * 5.5f);
+            cam.transform.position = Vector3.Lerp(cam.transform.position, pos, k);
+            cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, Quaternion.LookRotation(target - pos), k);
+            return;
+        }
+
+        if (Profile.Current.cameraMode == 1)
+        {
+            // Изометрия: фиксированный угол, камера тянется за мячом
+            Vector3 focus = new Vector3(b.x, 0f, b.z);
+            cam.transform.rotation = Quaternion.Euler(isoAngles);
+            cam.transform.position = Vector3.Lerp(cam.transform.position, focus - cam.transform.forward * isoDistance, k);
+        }
+        else
+        {
+            // Сбоку, как в телетрансляции: смотрим поперёк поля, по X ведём мяч, по Z смещаемся слабо
+            float fx = Mathf.Clamp(b.x, -(L - 15f), L - 15f);
+            Vector3 focus = new Vector3(fx, 0f, b.z * 0.3f);
+            Quaternion rot = Quaternion.Euler(sidePitch, 0f, 0f);
+            cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, rot, k);
+            cam.transform.position = Vector3.Lerp(cam.transform.position, focus - (rot * Vector3.forward) * sideDistance, k);
+        }
+    }
+
+    /// <summary>Стик/WASD → направление на поле относительно камеры (вверх по экрану = от камеры).</summary>
+    public Vector3 CameraRelative(Vector2 input)
+    {
+        Vector3 f = cam.transform.forward; f.y = 0f; f.Normalize();
+        Vector3 r = cam.transform.right; r.y = 0f; r.Normalize();
+        return Vector3.ClampMagnitude(f * input.y + r * input.x, 1f);
     }
 
     // ------------------------------------------------------------ правила
@@ -215,12 +331,17 @@ public class MatchManager : MonoBehaviour
     /// <summary>Вызывается мячом при входе в любой триггер.</summary>
     public void OnBallTrigger(Collider c)
     {
-        if (phase != Phase.Play) return;
+        if (!InMatch || phase != Phase.Play) return;
         Team conceded;
-        if (c == goalLeft) { scoreBlue++; conceded = Team.Red; banner = "ГОЛ! Забили синие"; }
-        else if (c == goalRight) { scoreRed++; conceded = Team.Blue; banner = "ГОЛ! Забили красные"; }
+        if (c == goalLeft) { scoreBlue++; conceded = Team.Red; banner = "ГОЛ! " + Catalog.OpponentClub; }
+        else if (c == goalRight) { scoreRed++; conceded = Team.Blue; banner = "ГОЛ! " + Profile.Current.clubName; }
         else return;
-        StopForSetPiece(SetPieceType.Kickoff, conceded, Vector3.zero, goalPause, null);  // с центра начинают пропустившие
+
+        // Тренировка: набрал нужное число голов — сразу итог
+        if (practiceIndex >= 0 && scoreRed >= Catalog.Practices[practiceIndex].goalsNeeded) { EndMatch(); return; }
+
+        // С центра начинают пропустившие (на тренировке — всегда ты)
+        StopForSetPiece(SetPieceType.Kickoff, practiceIndex >= 0 ? HumanTeam : conceded, Vector3.zero, goalPause, null);
     }
 
     /// <summary>Остановка игры: все замирают, через pause секунд — розыгрыш стандарта.</summary>
@@ -230,19 +351,29 @@ public class MatchManager : MonoBehaviour
         phaseTimer = pause;
         nextType = type; nextTeam = team; nextSpot = spot;
         passReceiver = null;
-        if (title != null) banner = $"{title}: {(team == Team.Red ? "красные" : "синие")}";
+        if (title != null) banner = $"{title}: {TeamName(team)}";
     }
 
     void BeginSetPiece(SetPieceType type, Team team, Vector3 spot)
     {
         phase = Phase.SetPiece;
         phaseTimer = 0f;
-        spTeam = team; spSpot = spot;
         banner = null;
         passReceiver = null;
 
         if (type == SetPieceType.Kickoff)
             foreach (var p in players) p.ResetTo(p.homePos, p.team == Team.Red ? Vector3.right : Vector3.left);
+
+        // Исполнитель: на ударе от ворот — вратарь, иначе ближайший полевой. Если у команды никого нет (тренировка) — разыгрываешь ты.
+        taker = FindTaker(team, type, spot);
+        if (taker == null || (type != SetPieceType.GoalKick && taker.role == Role.Keeper))
+        {
+            // У соперника на тренировке нет полевых — аут/угловой разыгрываешь ты
+            team = HumanTeam;
+            Player field = NearestFieldPlayer(team, spot);
+            taker = field != null ? field : Keeper(team);
+        }
+        spType = type; spTeam = team; spSpot = spot;
 
         ball.Hold(spot);
 
@@ -251,9 +382,6 @@ public class MatchManager : MonoBehaviour
         Vector3 inField = type == SetPieceType.ThrowIn ? new Vector3(0f, 0f, -Mathf.Sign(spot.z))
                         : type == SetPieceType.Corner ? (-spot).normalized
                         : attack;
-
-        // Исполнитель: на ударе от ворот — вратарь, иначе ближайший полевой. Ставим его за мяч.
-        taker = type == SetPieceType.GoalKick ? Keeper(team) : NearestFieldPlayer(team, spot);
         taker.ResetTo(spot - inField * 0.9f, inField);
 
         // Соперников, стоящих слишком близко, отодвигаем на 4 м (на центре — за круг)
@@ -267,16 +395,74 @@ public class MatchManager : MonoBehaviour
 
         // Твоя команда разыгрывает — управление переходит к исполнителю
         if (team == HumanTeam && taker.role == Role.Field) controlled = taker;
-        hint = team == HumanTeam && taker == controlled
-            ? "Стандарт: WASD — направление, J — пас, K — удар"
-            : null;
+    }
+
+    Player FindTaker(Team team, SetPieceType type, Vector3 spot)
+    {
+        Player keeper = Keeper(team), field = NearestFieldPlayer(team, spot);
+        return type == SetPieceType.GoalKick ? (keeper != null ? keeper : field) : (field != null ? field : keeper);
+    }
+
+    void EndMatch()
+    {
+        timeLeft = Mathf.Max(timeLeft, 0f);
+        phase = Phase.Over;
+        resultTimer = resultScreenTime;
+        passReceiver = null;
+        LastResult = GiveRewards();
+        banner = LastResult.title + "  " + LastResult.score;
+    }
+
+    /// <summary>Награды и статистика. Всё сохраняется в профиль.</summary>
+    MatchResult GiveRewards()
+    {
+        var p = Profile.Current;
+        var r = new MatchResult { score = $"{scoreRed} : {scoreBlue}" };
+
+        if (practiceIndex >= 0)
+        {
+            var pr = Catalog.Practices[practiceIndex];
+            bool success = scoreRed >= pr.goalsNeeded;
+            r.good = success;
+            r.title = success ? "ТРЕНИРОВКА ПРОЙДЕНА" : "ТРЕНИРОВКА НЕ ПРОЙДЕНА";
+            r.lines.Add($"{pr.title}: забито {scoreRed} из {pr.goalsNeeded}");
+            if (success && !p.practiceDone[practiceIndex])
+            {
+                p.practiceDone[practiceIndex] = true;
+                p.coins += pr.reward;
+                p.AddChallenge(ChallengeKind.PracticeDone, 1);
+                r.lines.Add($"+{pr.reward} монет за первое прохождение");
+            }
+            else if (success) { p.coins += 50; r.lines.Add("+50 монет"); }
+        }
+        else
+        {
+            bool win = scoreRed > scoreBlue, draw = scoreRed == scoreBlue;
+            r.good = win || draw;
+            r.title = win ? "ПОБЕДА" : draw ? "НИЧЬЯ" : "ПОРАЖЕНИЕ";
+            int reward = (win ? 500 : draw ? 250 : 100) + scoreRed * 50;
+            p.coins += reward;
+            p.matches++;
+            if (win) p.wins++; else if (draw) p.draws++; else p.losses++;
+            p.goalsFor += scoreRed;
+            p.goalsAgainst += scoreBlue;
+            p.AddChallenge(ChallengeKind.PlayMatches, 1);
+            p.AddChallenge(ChallengeKind.ScoreGoals, scoreRed);
+            if (win) p.AddChallenge(ChallengeKind.WinMatches, 1);
+            if (scoreBlue == 0) p.AddChallenge(ChallengeKind.CleanSheet, 1);
+            r.lines.Add($"+{reward} монет (результат + {scoreRed} × 50 за голы)");
+        }
+        int ready = p.ChallengesReady();
+        if (ready > 0) r.lines.Add($"Испытаний можно забрать: {ready}");
+        p.Save();
+        return r;
     }
 
     // ------------------------------------------------------------ события от игроков и мяча
 
     public void OnKick(Player kicker, Player receiver)
     {
-        if (phase == Phase.SetPiece) { phase = Phase.Play; hint = null; }   // стандарт разыгран — время пошло
+        if (phase == Phase.SetPiece) phase = Phase.Play;   // стандарт разыгран — время пошло
         passReceiver = receiver;
         passTimer = 2.5f;
         // Твоя команда отдала пас — управление сразу переходит к адресату
@@ -290,7 +476,10 @@ public class MatchManager : MonoBehaviour
         if (owner.team == HumanTeam && owner.role == Role.Field) controlled = owner;
     }
 
-    /// <summary>Q: переключиться на игрока своей команды, ближайшего к мячу (кроме текущего).</summary>
+    public void RequestKeeperRush() => keeperRushUntil = Time.time + 0.1f;
+    public void RequestTeammatePress() => teammatePressUntil = Time.time + 0.1f;
+
+    /// <summary>LB / Q: переключиться на игрока своей команды, ближайшего к мячу (кроме текущего).</summary>
     public void SwitchControl()
     {
         if (IsTaker(controlled)) return;
@@ -305,11 +494,30 @@ public class MatchManager : MonoBehaviour
         if (best != null) controlled = best;
     }
 
+    /// <summary>Флик правым стиком: переключиться на партнёра в этом направлении.</summary>
+    public void SwitchControlDir(Vector3 dir)
+    {
+        if (IsTaker(controlled) || dir.sqrMagnitude < 0.01f) return;
+        Player best = null;
+        float bestScore = float.MaxValue;
+        foreach (var p in players)
+        {
+            if (p.team != HumanTeam || p.role != Role.Field || p == controlled) continue;
+            Vector3 to = p.Position - controlled.Position;
+            float angle = Vector3.Angle(dir, to);
+            if (angle > 60f) continue;
+            float score = angle + to.magnitude * 0.5f;
+            if (score < bestScore) { bestScore = score; best = p; }
+        }
+        if (best != null) controlled = best;
+    }
+
     // ------------------------------------------------------------ запросы для ИИ
 
     public float OwnGoalX(Team t) => t == Team.Red ? -L : L;
     public Vector3 GoalOf(Team t) => new Vector3(OwnGoalX(t), 0f, 0f);
     public bool IsChaser(Player p) => chaser[(int)p.team] == p;
+    public string TeamName(Team t) => t == HumanTeam ? Profile.Current.clubName : Catalog.OpponentClub;
 
     /// <summary>Позиция «держать место»: базовая точка, смещённая за мячом; в атаке — выше по полю.</summary>
     public Vector3 FormationPos(Player p, bool attacking)
@@ -337,9 +545,10 @@ public class MatchManager : MonoBehaviour
 
     /// <summary>
     /// Лучший адресат паса: партнёр в секторе prefDir ± maxAngle. Чем ближе к направлению прицела и чем
-    /// свободнее линия паса (нет соперников рядом с отрезком), тем лучше. Вратарь — только если больше некому.
+    /// свободнее линия паса (нет соперников рядом с отрезком), тем лучше. Для навеса линия не важна.
+    /// Вратарь — только если больше некому.
     /// </summary>
-    public Player FindPassTarget(Player passer, Vector3 prefDir, float maxAngle)
+    public Player FindPassTarget(Player passer, Vector3 prefDir, float maxAngle, bool ignoreLane)
     {
         Vector3 from = passer.Position;
         prefDir.y = 0f;
@@ -356,12 +565,13 @@ public class MatchManager : MonoBehaviour
 
             float score = -angle * 1.2f - d * 0.4f;
             if (mate.role == Role.Keeper) score -= 60f;
-            foreach (var opp in players)
-            {
-                if (opp.team == passer.team) continue;
-                float lane = DistanceToSegment(opp.Position, from, mate.Position);
-                if (lane < 1.5f) score -= (1.5f - lane) * 25f;   // соперник рядом с линией паса — перехватит
-            }
+            if (!ignoreLane)
+                foreach (var opp in players)
+                {
+                    if (opp.team == passer.team) continue;
+                    float lane = DistanceToSegment(opp.Position, from, mate.Position);
+                    if (lane < 1.5f) score -= (1.5f - lane) * 25f;   // соперник рядом с линией паса — перехватит
+                }
             if (score > bestScore) { bestScore = score; best = mate; }
         }
         return best;
@@ -390,8 +600,8 @@ public class MatchManager : MonoBehaviour
     }
 
     /// <summary>
-    /// В каждой команде к мячу бежит ближайший полевой. В твоей команде ты тоже «кандидат»: если ближе всех ты,
-    /// ИИ-партнёры держат позиции. Бонус 1.5 м текущему «охотнику», чтобы роль не мигала.
+    /// В каждой команде к мячу бежит ближайший полевой (в твоей — если ближе всех ты, ИИ держит позиции).
+    /// pressHelper — ближайший к мячу партнёр, кроме тебя: он прессингует по RB / R1.
     /// </summary>
     void UpdateChasers()
     {
@@ -409,13 +619,29 @@ public class MatchManager : MonoBehaviour
             }
             chaser[t] = best;
         }
+
+        pressHelper = null;
+        float helperD = float.MaxValue;
+        foreach (var p in players)
+        {
+            if (p.team != HumanTeam || p.role != Role.Field || p == controlled) continue;
+            float d = Vector3.Distance(p.Position, b);
+            if (d < helperD) { helperD = d; pressHelper = p; }
+        }
     }
 
     // ------------------------------------------------------------ спавн
 
-    void SpawnTeams()
+    void SpawnTeams(MatchMode m)
     {
-        // Расстановка красных (своя половина -X). Синие — зеркально по X.
+        foreach (var p in players)
+        {
+            p.gameObject.SetActive(false);   // сразу выключаем, чтобы старые капсулы не толкали новые в этом кадре
+            Destroy(p.gameObject);
+        }
+        players.Clear();
+
+        // Расстановка твоей команды (своя половина -X). Соперник — зеркально по X.
         Vector3[] layout =
         {
             new Vector3(-L + 1f,  0f, 0f),              // 0 вратарь
@@ -424,30 +650,50 @@ public class MatchManager : MonoBehaviour
             new Vector3(-L * 0.2f, 0f, -W * 0.3f),      // 3 нападающий
             new Vector3(-L * 0.2f, 0f,  W * 0.3f),      // 4 нападающий
         };
+        // Кто из соперников выходит на поле в каждом режиме
+        int[] opponents = m == MatchMode.PracticeFree ? new int[0]
+                        : m == MatchMode.PracticeKeeper ? new[] { 0 }
+                        : m == MatchMode.PracticeDefense ? new[] { 0, 1, 2 }
+                        : new[] { 0, 1, 2, 3, 4 };
 
-        for (int t = 0; t < 2; t++)
-            for (int i = 0; i < layout.Length; i++)
-            {
-                Team team = (Team)t;
-                Vector3 home = layout[i];
-                if (team == Team.Blue) home.x = -home.x;
-                players.Add(CreatePlayer(team, i == 0 ? Role.Keeper : Role.Field, home));
-            }
+        var prof = Profile.Current;
+        Color kit = Catalog.Kits[prof.kit].color;
+        Color oppKit = Mathf.Abs(kit.b - Catalog.OpponentBlue.b) + Mathf.Abs(kit.r - Catalog.OpponentBlue.r) < 0.4f
+            ? Catalog.OpponentAlt : Catalog.OpponentBlue;
+        float diff = Catalog.DifficultySpeed[prof.difficulty];
+
+        for (int i = 0; i < layout.Length; i++)
+        {
+            var p = CreatePlayer(Team.Red, i == 0 ? Role.Keeper : Role.Field, layout[i], prof.playerNames[i], kit);
+            p.ApplyUpgrades(prof);
+            players.Add(p);
+        }
+        foreach (int i in opponents)
+        {
+            Vector3 home = layout[i];
+            home.x = -home.x;
+            var p = CreatePlayer(Team.Blue, i == 0 ? Role.Keeper : Role.Field, home, Catalog.OpponentNames[i], oppKit);
+            p.ApplyDifficulty(diff);
+            players.Add(p);
+        }
         controlled = players[4];
+        passReceiver = null;
+        Paint(ball.gameObject, Catalog.Balls[prof.ballSkin].color);
     }
 
-    Player CreatePlayer(Team team, Role role, Vector3 home)
+    Player CreatePlayer(Team team, Role role, Vector3 home, string name, Color kit)
     {
         var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-        go.name = $"{team}_{role}_{players.Count}";
-        Color c = team == Team.Red ? new Color(0.9f, 0.2f, 0.2f) : new Color(0.2f, 0.4f, 0.95f);
-        if (role == Role.Keeper) c = Color.Lerp(c, Color.black, 0.45f);        // вратарь темнее
+        go.name = $"{team}_{role}_{name}";
+        float lum = (kit.r + kit.g + kit.b) / 3f;
+        Color c = role == Role.Keeper ? (lum < 0.3f ? Color.Lerp(kit, Color.white, 0.45f) : Color.Lerp(kit, Color.black, 0.45f)) : kit;
         Paint(go, c);
         // «Нос» показывает, куда смотрит игрок
-        Prim(PrimitiveType.Cube, go.transform, new Vector3(0f, 0.5f, 0.45f), new Vector3(0.25f, 0.15f, 0.3f), Color.white);
+        Prim(PrimitiveType.Cube, go.transform, new Vector3(0f, 0.5f, 0.45f), new Vector3(0.25f, 0.15f, 0.3f),
+             lum > 0.7f ? new Color(0.15f, 0.15f, 0.15f) : Color.white);
 
         var p = go.AddComponent<Player>();
-        p.Init(this, team, role, home);
+        p.Init(this, team, role, home, name);
         // Мяч не сталкивается с капсулами физически — касания считает Ball (контроль, блоки)
         Physics.IgnoreCollision(ball.Col, go.GetComponent<Collider>());
         return p;
@@ -455,24 +701,39 @@ public class MatchManager : MonoBehaviour
 
     void CreateIndicators()
     {
+        Color accent = new Color(1f, 0.55f, 0.1f);
         marker = Prim(PrimitiveType.Sphere, null, Vector3.zero, Vector3.one * 0.4f, Color.yellow).transform;
-        aimArrow = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.12f, 0.02f, 1.2f), Color.yellow).transform;
-        passRing = Prim(PrimitiveType.Cylinder, null, Vector3.zero, new Vector3(1.3f, 0.01f, 1.3f), new Color(1f, 0.9f, 0.2f)).transform;
+        aimArrow = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.12f, 0.02f, 1.2f), accent).transform;
+        passRing = Prim(PrimitiveType.Cylinder, null, Vector3.zero, new Vector3(1.3f, 0.01f, 1.3f), accent).transform;
+        passLine = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.08f, 0.01f, 1f), accent).transform;
     }
 
-    /// <summary>Жёлтый шар над тобой, стрелка прицела под ногами и кольцо под тем, кому уйдёт пас по J.</summary>
+    /// <summary>Жёлтый шар над тобой, стрелка прицела и оранжевая линия/кольцо к тому, кому уйдёт пас.</summary>
     void UpdateIndicators()
     {
-        if (controlled == null) return;
-        Vector3 pos = controlled.Position;
-        marker.position = pos + Vector3.up * 2.4f;
-        aimArrow.position = pos + controlled.Aim * 1.4f + Vector3.up * 0.03f;
-        aimArrow.rotation = Quaternion.LookRotation(controlled.Aim);
-
-        bool canPass = controlled.HasBall || IsTaker(controlled);
-        Player target = canPass ? FindPassTarget(controlled, controlled.Aim, 70f) : null;
+        bool show = InMatch && controlled != null && phase != Phase.Over;
+        marker.gameObject.SetActive(show);
+        aimArrow.gameObject.SetActive(show);
+        Player target = null;
+        if (show)
+        {
+            Vector3 pos = controlled.Position;
+            marker.position = pos + Vector3.up * 2.4f;
+            aimArrow.position = pos + controlled.Aim * 1.4f + Vector3.up * 0.03f;
+            aimArrow.rotation = Quaternion.LookRotation(controlled.Aim);
+            if (controlled.HasBall || IsTaker(controlled)) target = FindPassTarget(controlled, controlled.Aim, 70f, false);
+        }
         passRing.gameObject.SetActive(target != null);
-        if (target != null) passRing.position = target.Position + Vector3.up * 0.02f;
+        passLine.gameObject.SetActive(target != null);
+        if (target != null)
+        {
+            Vector3 from = new Vector3(ball.transform.position.x, 0.03f, ball.transform.position.z);
+            Vector3 to = target.Position + Vector3.up * 0.03f;
+            passRing.position = target.Position + Vector3.up * 0.02f;
+            passLine.position = (from + to) * 0.5f;
+            passLine.rotation = Quaternion.LookRotation(to - from);
+            passLine.localScale = new Vector3(0.08f, 0.01f, Vector3.Distance(from, to));
+        }
     }
 
     // ------------------------------------------------------------ поле
@@ -481,9 +742,15 @@ public class MatchManager : MonoBehaviour
     {
         Transform root = new GameObject("Arena").transform;
 
-        // Газон с запасом за линиями (зона аутов), верхняя грань на y = 0
+        // Газон с запасом за линиями (зона аутов), верхняя грань на y = 0, и тёмная «трибуна» вокруг
         Prim(PrimitiveType.Cube, root, new Vector3(0f, -0.5f, 0f), new Vector3(length + 10f, 1f, width + 10f),
              new Color(0.2f, 0.55f, 0.25f), true);
+        Prim(PrimitiveType.Cube, root, new Vector3(0f, -0.6f, 0f), new Vector3(length + 60f, 1f, width + 60f),
+             new Color(0.12f, 0.13f, 0.16f), false);
+        // Полосы газона, как на стадионе
+        for (int i = 0; i < 10; i += 2)
+            Prim(PrimitiveType.Cube, root, new Vector3(-L + length / 10f * (i + 0.5f), 0.004f, 0f),
+                 new Vector3(length / 10f, 0.005f, width), new Color(0.22f, 0.6f, 0.27f));
 
         // Разметка — тонкие белые кубики без коллайдеров
         const float y = 0.01f, t = 0.12f, h = 0.02f;
@@ -504,7 +771,7 @@ public class MatchManager : MonoBehaviour
             seg.rotation = Quaternion.Euler(0f, -a * Mathf.Rad2Deg, 0f);   // отрезок по касательной
         }
 
-        foreach (float s in new[] { -1f, 1f })   // s = -1 — ворота красных, +1 — синих
+        foreach (float s in new[] { -1f, 1f })   // s = -1 — твои ворота, +1 — соперника
         {
             // Штрафная
             Line(root, new Vector3(s * (L - boxDepth), y, 0f), new Vector3(t, h, boxHalfWidth * 2f));
@@ -519,6 +786,11 @@ public class MatchManager : MonoBehaviour
         Fence(root, new Vector3(0f, 2f, -fz), new Vector3(length + 12f, 4f, 1f));
         Fence(root, new Vector3( fx, 2f, 0f), new Vector3(1f, 4f, width + 12f));
         Fence(root, new Vector3(-fx, 2f, 0f), new Vector3(1f, 4f, width + 12f));
+
+        // Рекламные щиты за дальней боковой линией (декор, без коллайдеров)
+        for (int i = 0; i < 8; i++)
+            Prim(PrimitiveType.Cube, root, new Vector3(-L + 2.5f + i * 5f, 0.5f, W + 3.5f), new Vector3(4.6f, 1f, 0.2f),
+                 i % 2 == 0 ? new Color(0.85f, 0.3f, 0.1f) : new Color(0.1f, 0.12f, 0.2f));
     }
 
     void BuildGoal(Transform root, float s)
@@ -542,7 +814,7 @@ public class MatchManager : MonoBehaviour
         float depth = gd - 0.6f;
         var trig = Prim(PrimitiveType.Cube, root, new Vector3(s * (L + 0.5f + depth * 0.5f), gh * 0.5f, 0f),
                         new Vector3(depth, gh - 0.2f, goalWidth - 0.2f), Color.clear, true);
-        trig.name = s < 0 ? "GoalTrigger_Red" : "GoalTrigger_Blue";
+        trig.name = s < 0 ? "GoalTrigger_Home" : "GoalTrigger_Away";
         trig.GetComponent<Renderer>().enabled = false;
         var col = trig.GetComponent<Collider>();
         col.isTrigger = true;
@@ -555,7 +827,7 @@ public class MatchManager : MonoBehaviour
     Transform Line(Transform root, Vector3 pos, Vector3 size) =>
         Prim(PrimitiveType.Cube, root, pos, size, Color.white).transform;
 
-    /// <summary>Примитив с цветом; коллайдер удаляется, если он не нужен (разметка, индикаторы).</summary>
+    /// <summary>Примитив с цветом; коллайдер удаляется, если он не нужен (разметка, индикаторы, декор).</summary>
     static GameObject Prim(PrimitiveType type, Transform parent, Vector3 localPos, Vector3 scale, Color color, bool keepCollider = false)
     {
         var go = GameObject.CreatePrimitive(type);
@@ -570,41 +842,97 @@ public class MatchManager : MonoBehaviour
     // material.color работает и во встроенном пайплайне, и в URP (_BaseColor помечен как [MainColor])
     static void Paint(GameObject go, Color c) => go.GetComponent<Renderer>().material.color = c;
 
-    // ------------------------------------------------------------ HUD
+    // ------------------------------------------------------------ HUD матча
 
     void OnGUI()
     {
-        var st = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 28, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter, richText = true
-        };
-        st.normal.textColor = Color.white;
+        if (!InMatch) return;
+        UI.Begin();
+        float w = UI.Width;
+        var prof = Profile.Current;
 
-        GUI.Label(new Rect(0, 10, Screen.width, 40),
-            $"<color=#ff5555>КРАСНЫЕ {scoreRed}</color> : <color=#5588ff>{scoreBlue} СИНИЕ</color>     {Mathf.CeilToInt(timeLeft)} c", st);
+        // Табло сверху по центру: клуб | счёт | соперник, под ним таймер
+        float cx = w * 0.5f;
+        UI.Box(new Rect(cx - 360, 18, 720, 58), new Color(0.06f, 0.07f, 0.09f, 0.92f));
+        UI.Label(new Rect(cx - 350, 18, 250, 58), prof.clubName.ToUpper(), UI.Head, 26, Color.white, TextAnchor.MiddleRight);
+        UI.Box(new Rect(cx - 90, 24, 80, 46), new Color(1f, 1f, 1f, 0.08f));
+        UI.Box(new Rect(cx + 10, 24, 80, 46), new Color(1f, 1f, 1f, 0.08f));
+        UI.Label(new Rect(cx - 90, 18, 80, 58), scoreRed.ToString(), UI.Head, 38, Color.white, TextAnchor.MiddleCenter);
+        UI.Label(new Rect(cx + 10, 18, 80, 58), scoreBlue.ToString(), UI.Head, 38, Color.white, TextAnchor.MiddleCenter);
+        UI.Label(new Rect(cx + 100, 18, 250, 58), Catalog.OpponentClub.ToUpper(), UI.Head, 26, Color.white, TextAnchor.MiddleLeft);
+        int secs = Mathf.CeilToInt(Mathf.Max(timeLeft, 0f));
+        UI.Box(new Rect(cx - 70, 80, 140, 44), UI.Lime);
+        UI.Label(new Rect(cx - 70, 80, 140, 44), $"{secs / 60:00}:{secs % 60:00}", UI.Head, 30, UI.Dark, TextAnchor.MiddleCenter);
+
+        // Имена игроков вдоль табло: свои слева, соперники справа; твой — подчёркнут
+        float x = 30;
+        foreach (var p in players)
+            if (p.team == HumanTeam)
+            {
+                UI.Box(new Rect(x, 136, 140, 32), new Color(0.06f, 0.07f, 0.09f, 0.75f));
+                if (p == controlled) UI.Box(new Rect(x, 164, 140, 4), UI.Lime);
+                UI.Label(new Rect(x, 136, 140, 32), p.displayName, UI.Body, 18, Color.white, TextAnchor.MiddleCenter);
+                x += 146;
+            }
+        x = w - 30 - 140;
+        foreach (var p in players)
+            if (p.team != HumanTeam)
+            {
+                UI.Box(new Rect(x, 136, 140, 32), new Color(0.06f, 0.07f, 0.09f, 0.75f));
+                UI.Label(new Rect(x, 136, 140, 32), p.displayName, UI.Body, 18, Color.white, TextAnchor.MiddleCenter);
+                x -= 146;
+            }
+
+        if (practiceIndex >= 0)
+            UI.Label(new Rect(0, 176, w, 34), $"{Catalog.Practices[practiceIndex].title}: забей {Catalog.Practices[practiceIndex].goalsNeeded}",
+                     UI.Body, 22, UI.Lime, TextAnchor.MiddleCenter);
 
         if (!string.IsNullOrEmpty(banner))
         {
-            st.fontSize = 44;
-            GUI.Label(new Rect(0, Screen.height * 0.3f, Screen.width, 120), banner, st);
+            UI.Box(new Rect(0, 1080 * 0.36f, w, 110), new Color(0f, 0f, 0f, 0.55f));
+            UI.Label(new Rect(0, 1080 * 0.36f, w, 110), banner.ToUpper(), UI.Head, 64, Color.white, TextAnchor.MiddleCenter);
         }
-        if (!string.IsNullOrEmpty(hint))
+        if (phase == Phase.Over)
+            UI.Label(new Rect(0, 1080 * 0.36f + 110, w, 40), "Возврат в меню…  (A / Enter — сразу)", UI.Body, 22, Color.white, TextAnchor.MiddleCenter);
+
+        // Карточка твоего игрока снизу слева
+        if (controlled != null)
         {
-            st.fontSize = 22;
-            GUI.Label(new Rect(0, 50, Screen.width, 30), hint, st);
+            UI.Box(new Rect(40, 950, 380, 60), new Color(0.06f, 0.07f, 0.09f, 0.9f));
+            UI.Box(new Rect(40, 950, 60, 60), Catalog.Kits[prof.kit].color);
+            UI.Label(new Rect(115, 950, 220, 60), controlled.displayName.ToUpper(), UI.Head, 28, Color.white, TextAnchor.MiddleLeft);
+            UI.Label(new Rect(300, 950, 110, 60), IsTaker(controlled) ? "СТАНДАРТ" : "НАП", UI.Body, 20, UI.Lime, TextAnchor.MiddleRight);
+            UI.Label(new Rect(40, 1012, 600, 30),
+                $"СКО {60 + prof.speedLvl * 7}   УДР {58 + prof.shotLvl * 7}   КОН {62 + prof.controlLvl * 7}",
+                UI.Body, 20, new Color(1f, 1f, 1f, 0.85f), TextAnchor.MiddleLeft);
+
+            // Шкала силы удара
+            if (controlled.charge > 0f)
+            {
+                UI.Box(new Rect(40, 910, 380, 26), new Color(0f, 0f, 0f, 0.7f));
+                UI.Box(new Rect(43, 913, 374 * controlled.charge, 20), Color.Lerp(UI.Lime, new Color(1f, 0.3f, 0.2f), controlled.charge));
+            }
         }
 
-        // Шкала силы удара
-        if (controlled != null && controlled.charge > 0f)
+        // Соперник с мячом — снизу справа
+        Player owner = ball.Owner;
+        if (owner != null && owner.team != HumanTeam)
         {
-            GUI.color = Color.black;
-            GUI.DrawTexture(new Rect(20, Screen.height - 70, 204, 24), Texture2D.whiteTexture);
-            GUI.color = Color.Lerp(Color.yellow, Color.red, controlled.charge);
-            GUI.DrawTexture(new Rect(22, Screen.height - 68, 200 * controlled.charge, 20), Texture2D.whiteTexture);
-            GUI.color = Color.white;
+            UI.Box(new Rect(w - 420, 950, 380, 60), new Color(0.06f, 0.07f, 0.09f, 0.9f));
+            UI.Label(new Rect(w - 405, 950, 300, 60), owner.displayName.ToUpper(), UI.Head, 28, Color.white, TextAnchor.MiddleLeft);
+            UI.Label(new Rect(w - 160, 950, 110, 60), "С МЯЧОМ", UI.Body, 20, new Color(1f, 0.55f, 0.1f), TextAnchor.MiddleRight);
         }
 
-        GUI.Label(new Rect(20, Screen.height - 40, Screen.width, 30),
-            "WASD — бег   Shift — спринт   J — пас (кольцо = адресат)   K (зажать) — удар   Q — смена игрока   R — рестарт");
+        if (prof.showHints && !paused)
+        {
+            string hint = GameInput.UsingGamepad
+                ? (owner != null && owner.team != HumanTeam
+                    ? "B — отбор   X — подкат   A (держать) — опека   RB — прессинг партнёра   Y — выход вратаря   LB — смена"
+                    : "A — пас   X — навес   Y — пас на ход   B — удар   RT — спринт   LB / правый стик — смена   Start — пауза")
+                : (owner != null && owner.team != HumanTeam
+                    ? "K — отбор   L — подкат   J (держать) — опека   E — прессинг партнёра   I — выход вратаря   Q — смена"
+                    : "J — пас   L — навес   I — пас на ход   K — удар   Shift — спринт   Q — смена   Esc — пауза");
+            UI.Label(new Rect(0, 1040, w, 34), hint, UI.Body, 20, new Color(1f, 1f, 1f, 0.8f), TextAnchor.MiddleCenter);
+        }
     }
 }
