@@ -24,10 +24,10 @@ public class Player : MonoBehaviour
     public float staminaRecover = 0.07f;   // в секунду без спринта
 
     [Header("Мяч")]
-    public float controlRadius = 0.95f;
+    public float controlRadius = 1.1f;     // в этом радиусе мяч «прилипает» к игроку
     public float shotMin = 14f, shotMax = 28f;
     public float chargeTime = 0.8f;
-    public float passArriveSpeed = 7f;     // обычный пас приходит «в ноги» с этой скоростью
+    public float passArriveSpeed = 8.5f;   // обычный пас приходит «в ноги» с этой скоростью (даже при коротком нажатии)
     public float drivenArriveSpeed = 11f;  // прострел (RB+A) — быстрее, но его сложнее принять
     public float aiShootDistance = 12f;
     [HideInInspector] public float touchBonus;        // прокачка «Контроль»: мягче первое касание
@@ -35,7 +35,7 @@ public class Player : MonoBehaviour
 
     [Header("Отбор и вратарь")]
     public float slideSpeed = 10f, slideTime = 0.4f, slideRecover = 0.5f;
-    public float tackleTime = 0.25f, tackleCooldownTime = 0.8f;
+    public float tackleTime = 0.35f, tackleCooldownTime = 0.9f, tackleLunge = 8.5f, tackleRange = 2.2f;
     public float diveSpeed = 7f, diveTime = 0.4f, diveReach = 0.6f;
     [HideInInspector] public float keeperSkill = 0.85f;  // шанс, что вратарь успеет прыгнуть
 
@@ -54,6 +54,7 @@ public class Player : MonoBehaviour
     Vector3 aim;
     float kickCooldown, lostTimer, thinkTimer, holdTimer;
     float tackleTimer, tackleCooldown, slideTimer, recoverTimer;
+    bool tackleResolved;
     float diveTimer, diveCooldown, skillTimer, headerBuffer, openTimer;
     Vector3 slideDir, diveDir, skillVel, openTarget;
     float passBuffer, shotBuffer, bufferedCharge;
@@ -104,7 +105,7 @@ public class Player : MonoBehaviour
     public void Init(MatchManager m, Team t, Role r, Vector3 home, string name)
     {
         mm = m; team = t; role = r; homePos = home; displayName = name;
-        if (r == Role.Keeper) controlRadius = 1.2f;
+        if (r == Role.Keeper) controlRadius = 1.3f;
 
         rb = gameObject.AddComponent<Rigidbody>();
         rb.mass = 70f;
@@ -199,7 +200,12 @@ public class Player : MonoBehaviour
         else if (role == Role.Keeper) KeeperUpdate();
         else if (!AIHeader()) FieldUpdate();
 
-        if (Tackling) desiredVel = (BallPos - Position).normalized * 7.5f;   // отбор: короткий выпад к мячу
+        // Отбор: выпад к мячу, как только дотянулся — исход
+        if (Tackling && !tackleResolved)
+        {
+            desiredVel = (BallPos - Position).normalized * tackleLunge;
+            if (Vector3.Distance(Position, BallPos) < controlRadius + 0.3f && Ball.Body.position.y < 1f) ResolveTackle();
+        }
     }
 
     void FixedUpdate()
@@ -250,8 +256,8 @@ public class Player : MonoBehaviour
         if (defending && !taker)
         {
             // ---------------- ОБОРОНА
-            if (GameInput.Down(Btn.Shoot)) SlideTackle(aim);               // B / Круг — подкат
-            if (GameInput.Down(Btn.Lob)) StandingTackle();                 // X / Квадрат — отбор, толчок корпусом
+            if (GameInput.Down(Btn.Lob)) SlideTackle(aim);                 // X / Квадрат — подкат (как в FIFA)
+            if (GameInput.Down(Btn.Shoot)) StandingTackle();               // B / Круг — отбор, толчок корпусом
             if (GameInput.Held(Btn.Through)) mm.RequestKeeperRush();       // Y / Треугольник — выход вратаря
             if (GameInput.Held(Btn.Modifier)) mm.RequestTeammatePress();   // RB / R1 — прессинг партнёра
             if (GameInput.Down(Btn.Switch)) mm.SwitchControl();            // LB / L1 — смена игрока
@@ -614,11 +620,43 @@ public class Player : MonoBehaviour
 
     // ------------------------------------------------------------ отбор
 
+    /// <summary>Отбор (B / Круг): выпад к мячу. Если дотянулся — исход решается сразу (см. ResolveTackle).</summary>
     void StandingTackle()
     {
         if (tackleCooldown > 0f) return;
+        if (Vector3.Distance(Position, BallPos) > tackleRange + controlRadius) return;   // слишком далеко — не тратим отбор
         tackleTimer = tackleTime;
         tackleCooldown = tackleCooldownTime;
+        tackleResolved = false;
+    }
+
+    /// <summary>
+    /// Исход отбора: спереди шанс выше, сзади и против укрывающего мяч — ниже. Удачный отбор чаще забирает мяч,
+    /// иногда просто выбивает его. Неудачный — игрок «проваливается» на мгновение.
+    /// </summary>
+    void ResolveTackle()
+    {
+        tackleResolved = true;
+        Player owner = Ball.Owner;
+        if (owner == null) { if (!Ball.Held) Ball.ForceOwner(this); return; }   // мяч ничей — просто забрали
+        if (owner.team == team) return;
+
+        bool fromBehind = Vector3.Dot(owner.Facing, (Position - owner.Position).normalized) < -0.3f;
+        float chance = 0.8f - (owner.Shielding ? 0.25f : 0f) - (fromBehind ? 0.2f : 0f)
+                     - (owner.IsSprinting ? 0f : 0.05f)
+                     + (team == MatchManager.HumanTeam ? 0.05f : 0f);
+        if (Random.value < chance)
+        {
+            if (Random.value < 0.7f) Ball.ForceOwner(this);
+            else Kick((BallPos - owner.Position).normalized + Random.insideUnitSphere * 0.5f, 6f, 0.3f, null);  // выбил
+            if (IsControlled) mm.Flash("ОТБОР!");
+        }
+        else
+        {
+            recoverTimer = 0.35f;                          // промах — секунду теряешь равновесие
+            if (IsControlled) mm.Flash("МИМО");
+        }
+        tackleTimer = 0f;
     }
 
     void SlideTackle(Vector3 dir)
@@ -746,17 +784,19 @@ public class Player : MonoBehaviour
         float power = arrive;
         for (int i = 0; i < 2; i++)
         {
-            float d = Vector3.Distance(BallPos, target);
-            // v0² = v1² + 2·a·d — с трением качения мяч придёт к партнёру со скоростью arrive
-            power = Mathf.Clamp(Mathf.Sqrt(arrive * arrive + 2f * Ball.rollDecel * d), 8f, driven ? 28f : 24f);
+            // v0² = v1² + 2·a·d — с трением качения мяч придёт к партнёру со скоростью arrive.
+            // +1.5 м запаса: мяч стартует перед пасующим и должен дойти «в ноги», а не остановиться перед ними.
+            float d = Vector3.Distance(BallPos, target) + 1.5f;
+            power = Mathf.Clamp(Mathf.Sqrt(arrive * arrive + 2f * Ball.rollDecel * d), 10f, driven ? 28f : 24f);
             float t = d / ((power + arrive) * 0.5f);
             target = mate.Position + mate.Velocity * Mathf.Min(t, 1.2f);
         }
         Vector3 dir = target - BallPos;
         mm.NearestOpponent(this, out float dOpp);
-        float err = (1f + dir.magnitude * 0.08f + (dOpp < 1.5f ? 2f : 0f) + (driven ? 1f : 0f)) * (1f - 0.05f * Profile.Current.controlLvl * (team == MatchManager.HumanTeam ? 1 : 0));
+        float err = (0.5f + dir.magnitude * 0.05f + (dOpp < 1.5f ? 1.5f : 0f) + (driven ? 1f : 0f))
+                  * (team == MatchManager.HumanTeam ? 1f - 0.05f * Profile.Current.controlLvl : 1f);
         dir = Quaternion.Euler(0f, Gauss() * err, 0f) * dir;
-        Kick(dir, power, driven ? 0.05f : 0.2f, mate);
+        Kick(dir, power, 0f, mate);                     // пас строго по земле — без подскоков, которые гасят скорость
         return true;
     }
 
@@ -772,9 +812,9 @@ public class Player : MonoBehaviour
             : mate.AttackDir;
         Vector3 target = mm.ClampToField(mate.Position + run * 5f, 1f);
         float d = Vector3.Distance(BallPos, target);
-        const float arrive = 4f;
-        float power = Mathf.Clamp(Mathf.Sqrt(arrive * arrive + 2f * Ball.rollDecel * d), 8f, 22f);
-        Kick(target - BallPos, power, 0.15f, mate);
+        const float arrive = 5f;
+        float power = Mathf.Clamp(Mathf.Sqrt(arrive * arrive + 2f * Ball.rollDecel * (d + 1f)), 10f, 22f);
+        Kick(target - BallPos, power, 0f, mate);
         return true;
     }
 

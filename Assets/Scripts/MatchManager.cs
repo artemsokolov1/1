@@ -80,7 +80,7 @@ public class MatchManager : MonoBehaviour
     Transform marker, aimArrow, passRing, passLine, nextSwitch;   // индикаторы: ты, прицел, пас, следующий по LB
 
     Player runner, celebrant;                        // кто забегает по LB; кто забил (камера на него)
-    float runUntil, autoSwitchAt, markTimer, flashTimer, shakeTime, shakeAmp;
+    float runUntil, autoSwitchAt, markTimer, flashTimer, shakeTime, shakeAmp, manualSwitchUntil;
     string flashText;
     Vector3 camVel;
     Dictionary<Player, Player> marks = new Dictionary<Player, Player>();   // защитник → опекаемый
@@ -633,6 +633,7 @@ public class MatchManager : MonoBehaviour
     void DoAutoSwitch()
     {
         if (controlled == null || IsTaker(controlled) || controlled.HasBall) return;
+        if (Time.time < manualSwitchUntil) return;          // ты только что переключился сам — не перебиваем
         Player best = BestInterceptor(out float bestD);
         float cur = DistanceToBallPath(controlled);
         if (best != null && best != controlled && cur - bestD > 1.5f) controlled = best;
@@ -761,7 +762,10 @@ public class MatchManager : MonoBehaviour
     {
         if (IsTaker(controlled)) return;
         Player best = NextSwitchTarget();
-        if (best != null) controlled = best;
+        if (best == null) return;
+        controlled = best;
+        manualSwitchUntil = Time.time + 1.5f;
+        autoSwitchAt = 0f;
     }
 
     /// <summary>Флик правым стиком: переключиться на партнёра в этом направлении.</summary>
@@ -779,7 +783,10 @@ public class MatchManager : MonoBehaviour
             float score = angle + to.magnitude * 0.5f;
             if (score < bestScore) { bestScore = score; best = p; }
         }
-        if (best != null) controlled = best;
+        if (best == null) return;
+        controlled = best;
+        manualSwitchUntil = Time.time + 1.5f;
+        autoSwitchAt = 0f;
     }
 
     // ------------------------------------------------------------ запросы для ИИ
@@ -982,16 +989,24 @@ public class MatchManager : MonoBehaviour
         if (nextSwitch == null) nextSwitch = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.25f, 0.25f, 0.25f), new Color(0.3f, 0.85f, 1f)).transform;
     }
 
-    /// <summary>Кого выберет LB: ближайший к мячу партнёр (кроме текущего).</summary>
+    /// <summary>
+    /// Кого выберет LB: партнёр (кроме текущего), который быстрее всех вступит в игру —
+    /// ближе к мячу и стоит между мячом и своими воротами (тот, кто остался за спиной атаки, получает штраф).
+    /// </summary>
     Player NextSwitchTarget()
     {
+        Vector3 b = ball.transform.position;
+        b.y = 0f;
+        Vector3 ownGoal = GoalOf(HumanTeam);
+        float ballToGoal = Vector3.Distance(b, ownGoal);
         Player best = null;
-        float bestD = float.MaxValue;
+        float bestScore = float.MaxValue;
         foreach (var p in players)
         {
             if (p.team != HumanTeam || p.role != Role.Field || p == controlled) continue;
-            float d = Vector3.Distance(p.Position, ball.transform.position);
-            if (d < bestD) { bestD = d; best = p; }
+            float score = Vector3.Distance(p.Position, b);
+            if (Vector3.Distance(p.Position, ownGoal) > ballToGoal + 1f) score += 4f;   // не «под мячом», а позади атаки
+            if (score < bestScore) { bestScore = score; best = p; }
         }
         return best;
     }
@@ -1241,9 +1256,9 @@ public class MatchManager : MonoBehaviour
         {
             bool def = owner != null && owner.team != HumanTeam;
             string hint = GameInput.UsingGamepad
-                ? (def ? "A (держать) — сдерживание   B — подкат   X — отбор   Y — вратарь   RB — прессинг   LB / R — смена   LT — выжидание"
+                ? (def ? "A (держать) — сдерживание   X — подкат   B — отбор   Y — вратарь   RB — прессинг   LB / R — смена   LT — выжидание"
                        : "A — пас   B — удар   X — навес   Y — на ход   RB — укрывание / точный   LB — забегание   R — финты   RT — спринт")
-                : (def ? "J (держать) — сдерживание   K — подкат   L — отбор   I — вратарь   E — прессинг   Q / TFGH — смена   Space — выжидание"
+                : (def ? "J (держать) — сдерживание   L — подкат   K — отбор   I — вратарь   E — прессинг   Q / TFGH — смена   Space — выжидание"
                        : "J — пас   K — удар   L — навес   I — на ход   E — укрывание / точный   Q — забегание   TFGH — финты   Shift — спринт");
             UI.Label(new Rect(0, 1050, w, 30), hint, UI.Body, 18, new Color(1f, 1f, 1f, 0.8f), TextAnchor.MiddleCenter);
         }

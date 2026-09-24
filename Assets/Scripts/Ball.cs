@@ -25,18 +25,17 @@ public class Ball : MonoBehaviour
     [Range(0f, 1f)] public float bounciness = 0.5f;
 
     [Header("Контроль мяча")]
-    public float holdDistance = 0.8f;          // мяч перед игроком при обычном ведении
-    public float sprintHoldDistance = 1.3f;    // на спринте касания длиннее — мяч легче отобрать
+    public float holdDistance = 0.7f;          // мяч перед игроком при обычном ведении
+    public float sprintHoldDistance = 1.05f;   // на спринте касания чуть длиннее — мяч легче отобрать
     public float shieldHoldDistance = 0.7f;    // при укрывании мяч с дальней от соперника стороны
-    public float holdStiffness = 14f;
-    public float trapSpeed = 16f;              // быстрее этого (относительно игрока) полевой мяч не остановит вовсе
-    public float softTouchSpeed = 9f;          // до этой скорости приём чистый, выше — мяч отскакивает от ноги
+    public float holdStiffness = 30f;          // насколько жёстко мяч «прилипает» к ноге при ведении
+    public float trapSpeed = 18f;              // быстрее этого (относительно игрока) полевой мяч не остановит вовсе
+    public float softTouchSpeed = 12f;         // до этой скорости приём чистый, выше — мяч отскакивает от ноги
+    public float controlledTouchBonus = 3f;    // твоему игроку приём прощается чуть больше
     public float keeperCatchSpeed = 20f;       // вратарь ловит медленнее этого…
     public float keeperParrySpeed = 36f;       // …и отбивает до этого
     public float bodyRadius = 0.5f;
     public float ownerBonus = 0.35f;           // чтобы отобрать мяч, нужно быть ближе владельца на столько
-    public float tackleReach = 0.5f;           // отбор: дополнительный радиус
-    public float tackleBonus = 0.6f;           // отбор: перевес в борьбе за мяч
 
     public Rigidbody Body { get; private set; }
     public SphereCollider Col { get; private set; }
@@ -52,7 +51,7 @@ public class Ball : MonoBehaviour
         Body = GetComponent<Rigidbody>();
         Body.mass = 0.45f;
         Body.linearDamping = 0f;                // сопротивление считаем сами (квадратичное)
-        Body.angularDamping = 1f;
+        Body.angularDamping = 0.05f;           // вращение согласуем с качением сами — иначе PhysX «тормозит» мяч трением
         Body.interpolation = RigidbodyInterpolation.Interpolate;
         Body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
@@ -61,8 +60,8 @@ public class Ball : MonoBehaviour
         Col.material = new PhysicsMaterial("Ball")
         {
             bounciness = bounciness,
-            dynamicFriction = 0.2f,
-            staticFriction = 0.2f,
+            dynamicFriction = 0f,                 // трение о газон считаем сами (rollDecel) — пас долетает ровно туда,
+            staticFriction = 0f,                  // куда рассчитан
             bounceCombine = PhysicsMaterialCombine.Maximum,
             frictionCombine = PhysicsMaterialCombine.Minimum
         };
@@ -104,7 +103,7 @@ public class Ball : MonoBehaviour
             if (y > (keeper ? 2.4f : 0.9f)) continue;            // высокий мяч полевой не примет (только головой), вратарь — руками
 
             float dist = Flat(Body.position - p.Position).magnitude;
-            float reach = p.controlRadius + (p.Tackling ? tackleReach : 0f) + (p.Diving ? p.diveReach : 0f);
+            float reach = p.controlRadius + (p.Diving ? p.diveReach : 0f);
             if (dist > reach) continue;
 
             float rel = Flat(Body.linearVelocity - p.Velocity).magnitude;
@@ -118,7 +117,7 @@ public class Ball : MonoBehaviour
                 else if (rel > trapSpeed) continue;
             }
 
-            float score = dist - (p == Owner ? ownerBonus + p.ShieldBonus : 0f) - (p.Tackling ? tackleBonus : 0f);
+            float score = dist - (p == Owner ? ownerBonus + p.ShieldBonus : 0f);   // отбор решает Player.ResolveTackle
             if (score < bestScore) { bestScore = score; best = p; }
         }
 
@@ -129,7 +128,7 @@ public class Ball : MonoBehaviour
         if (best != null && Owner == null && best.role == Role.Field)
         {
             float rel = Flat(Body.linearVelocity - best.Velocity).magnitude;
-            float soft = softTouchSpeed + best.touchBonus;
+            float soft = softTouchSpeed + best.touchBonus + (best.IsControlled ? controlledTouchBonus : 0f);
             if (rel > soft) { HeavyTouch(best, rel - soft); return; }
         }
 
@@ -149,9 +148,20 @@ public class Ball : MonoBehaviour
         float d = p.Shielding ? shieldHoldDistance : p.IsSprinting ? sprintHoldDistance : holdDistance;
         Vector3 hold = p.Position + dir * d;
         Vector3 v = p.Velocity + Flat(hold - Body.position) * holdStiffness;
-        v = Vector3.ClampMagnitude(v, p.Velocity.magnitude + 6f);
+        v = Vector3.ClampMagnitude(v, p.Velocity.magnitude + 12f);
         Body.linearVelocity = new Vector3(v.x, Mathf.Min(Body.linearVelocity.y, 0f), v.z);
         Body.angularVelocity = Vector3.Cross(Vector3.up, v) / Radius;
+    }
+
+    /// <summary>Отбор удался: мяч сразу у отбиравшего.</summary>
+    public void ForceOwner(Player p)
+    {
+        if (Held) return;
+        if (Owner != null && Owner != p) Owner.OnLostBall();
+        Owner = p;
+        lastTouch = p;
+        sideSpin = topSpin = 0f;
+        MatchManager.I.OnPossession(p);
     }
 
     void HeavyTouch(Player p, float excess)
