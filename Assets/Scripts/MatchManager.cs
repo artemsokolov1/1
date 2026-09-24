@@ -77,7 +77,7 @@ public class MatchManager : MonoBehaviour
 
     Collider goalLeft, goalRight;                    // триггеры ворот твоей команды (-X) и соперника (+X)
     Player[] chaser = new Player[2];
-    Transform marker, aimArrow, passRing, passLine, nextSwitch;   // индикаторы: ты, прицел, пас, следующий по LB
+    Transform marker, nextSwitch;                    // индикаторы: над тобой и над тем, на кого переключит LB
 
     Player runner, celebrant;                        // кто забегает по LB; кто забил (камера на него)
     float runUntil, autoSwitchAt, markTimer, flashTimer, shakeTime, shakeAmp, manualSwitchUntil;
@@ -257,6 +257,13 @@ public class MatchManager : MonoBehaviour
 
         if (passReceiver != null && (passTimer -= Time.deltaTime) <= 0f) passReceiver = null;
         if (autoSwitchAt > 0f && Time.time >= autoSwitchAt) { autoSwitchAt = 0f; DoAutoSwitch(); }
+        HandleSwitchInput();
+        // Вратарём управляешь только пока мяч у него: отдал — управление переходит к полевому
+        if (controlled != null && controlled.role == Role.Keeper && !controlled.HasBall && !IsTaker(controlled))
+        {
+            Player best = BestInterceptor(out _);
+            if (best != null) controlled = best;
+        }
         flashTimer -= Time.deltaTime;
         UpdateChasers();
         UpdateMarking();
@@ -519,8 +526,8 @@ public class MatchManager : MonoBehaviour
                 p.ResetTo(ClampToField(spot + (d.sqrMagnitude < 0.01f ? -inField : d.normalized) * 4f, 0.5f), -d);
         }
 
-        // Твоя команда разыгрывает — управление переходит к исполнителю
-        if (team == HumanTeam && taker.role == Role.Field) controlled = taker;
+        // Твоя команда разыгрывает — управление переходит к исполнителю (на ударе от ворот — к вратарю)
+        if (team == HumanTeam) controlled = taker;
     }
 
     Player FindTaker(Team team, SetPieceType type, Vector3 spot)
@@ -595,13 +602,36 @@ public class MatchManager : MonoBehaviour
         if (receiver != null && receiver.team == HumanTeam && receiver.role == Role.Field) controlled = receiver;
         // Соперник отдал пас/ударил — автосмена на того, кто лучше успевает к мячу
         else if (kicker.team != HumanTeam) ScheduleAutoSwitch(lofted, false);
+        // Твой вратарь выбил мяч никому конкретно — сразу даём полевого, ближайшего к полёту мяча
+        else if (kicker.role == Role.Keeper && kicker == controlled) autoSwitchAt = Time.time + 0.15f;
     }
 
     public void OnPossession(Player owner)
     {
         passReceiver = null;
-        if (owner.team == HumanTeam && owner.role == Role.Field) controlled = owner;   // мяч у своего — управляешь им
+        if (owner.team == HumanTeam) controlled = owner;   // мяч у своего (и у вратаря) — управляешь им
         else if (owner.team != HumanTeam && Profile.Current.autoSwitch == 0) ScheduleAutoSwitch(false, false);
+    }
+
+    /// <summary>
+    /// LB / L1 и правый стик. Работают всегда, пока идёт игра (и когда мяч ничей, и в обороне):
+    /// с мячом LB — забегание партнёра, правый стик — финт; без мяча — смена игрока.
+    /// </summary>
+    void HandleSwitchInput()
+    {
+        if (controlled == null || (phase != Phase.Play && phase != Phase.SetPiece)) return;
+        bool withBall = controlled.HasBall || IsTaker(controlled);
+        if (GameInput.Down(Btn.Switch))
+        {
+            if (withBall) CallRun(controlled);
+            else SwitchControl();
+        }
+        else if (GameInput.RightStickFlick(out Vector2 rs))
+        {
+            Vector3 d = CameraRelative(rs);
+            if (controlled.HasBall) controlled.SkillMove(d);
+            else if (!IsTaker(controlled)) SwitchControlDir(d);
+        }
     }
 
     /// <summary>Мяч стал ничьим (рикошет, отбив, плохое касание, штанга).</summary>
@@ -981,11 +1011,7 @@ public class MatchManager : MonoBehaviour
     /// </summary>
     void CreateIndicators()
     {
-        Color accent = new Color(1f, 0.55f, 0.1f);
         if (marker == null) marker = Prim(PrimitiveType.Sphere, null, Vector3.zero, Vector3.one * 0.4f, Color.yellow).transform;
-        if (aimArrow == null) aimArrow = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.12f, 0.02f, 1.2f), accent).transform;
-        if (passRing == null) passRing = Prim(PrimitiveType.Cylinder, null, Vector3.zero, new Vector3(1.3f, 0.01f, 1.3f), accent).transform;
-        if (passLine == null) passLine = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.08f, 0.01f, 1f), accent).transform;
         if (nextSwitch == null) nextSwitch = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.25f, 0.25f, 0.25f), new Color(0.3f, 0.85f, 1f)).transform;
     }
 
@@ -1012,40 +1038,23 @@ public class MatchManager : MonoBehaviour
     }
 
     /// <summary>Жёлтый шар над тобой, стрелка прицела и оранжевая линия/кольцо к тому, кому уйдёт пас.</summary>
+    /// <summary>
+    /// Как в FIFA: над твоим игроком — жёлтый маркер (и имя в HUD), над тем, на кого переключит LB, — голубой ромб.
+    /// Линий «куда уйдёт пас» нет: направление паса задаёшь стиком.
+    /// </summary>
     void UpdateIndicators()
     {
-        if (marker == null || aimArrow == null || passRing == null || passLine == null || nextSwitch == null) CreateIndicators();
+        if (marker == null || nextSwitch == null) CreateIndicators();
         bool show = InMatch && controlled != null && phase != Phase.Over;
         marker.gameObject.SetActive(show);
-        aimArrow.gameObject.SetActive(show);
-        // Голубой ромб — над тем, на кого переключит LB (как индикатор следующего игрока в FIFA)
-        Player next = show && ball.Owner != null && ball.Owner.team != HumanTeam ? NextSwitchTarget() : null;
+        if (show) marker.position = controlled.Position + Vector3.up * 2.4f;
+
+        Player next = show && !controlled.HasBall && !IsTaker(controlled) ? NextSwitchTarget() : null;
         nextSwitch.gameObject.SetActive(next != null);
         if (next != null)
         {
             nextSwitch.position = next.Position + Vector3.up * 2.4f;
             nextSwitch.rotation = Quaternion.Euler(45f, Time.time * 180f, 45f);
-        }
-
-        Player target = null;
-        if (show)
-        {
-            Vector3 pos = controlled.Position;
-            marker.position = pos + Vector3.up * 2.4f;
-            aimArrow.position = pos + controlled.Aim * 1.4f + Vector3.up * 0.03f;
-            aimArrow.rotation = Quaternion.LookRotation(controlled.Aim);
-            if (controlled.HasBall || IsTaker(controlled)) target = FindPassTarget(controlled, controlled.Aim, 70f, false);
-        }
-        passRing.gameObject.SetActive(target != null);
-        passLine.gameObject.SetActive(target != null);
-        if (target != null)
-        {
-            Vector3 from = new Vector3(ball.transform.position.x, 0.03f, ball.transform.position.z);
-            Vector3 to = target.Position + Vector3.up * 0.03f;
-            passRing.position = target.Position + Vector3.up * 0.02f;
-            passLine.position = (from + to) * 0.5f;
-            passLine.rotation = Quaternion.LookRotation(to - from);
-            passLine.localScale = new Vector3(0.08f, 0.01f, Vector3.Distance(from, to));
         }
     }
 
@@ -1233,11 +1242,24 @@ public class MatchManager : MonoBehaviour
                 $"СКО {60 + prof.speedLvl * 7}   УДР {58 + prof.shotLvl * 7}   КОН {62 + prof.controlLvl * 7}   ВЫН {Mathf.RoundToInt(controlled.stamina * 100)}",
                 UI.Body, 20, new Color(1f, 1f, 1f, 0.85f), TextAnchor.MiddleLeft);
 
-            // Шкала силы удара
-            if (controlled.charge > 0f)
+            // Шкала силы: удар (B) — от лайма к красному, навес / пас на ход (X / Y) — голубая
+            float ch = Mathf.Max(controlled.charge, controlled.passCharge);
+            if (ch > 0f)
             {
+                bool pass = controlled.passCharge > controlled.charge;
                 UI.Box(new Rect(40, 910, 380, 26), new Color(0f, 0f, 0f, 0.7f));
-                UI.Box(new Rect(43, 913, 374 * controlled.charge, 20), Color.Lerp(UI.Lime, new Color(1f, 0.3f, 0.2f), controlled.charge));
+                UI.Box(new Rect(43, 913, 374 * ch, 20),
+                       pass ? new Color(0.3f, 0.8f, 1f) : Color.Lerp(UI.Lime, new Color(1f, 0.3f, 0.2f), ch));
+                UI.Label(new Rect(40, 880, 380, 28), pass ? "СИЛА ПАСА" : "СИЛА УДАРА", UI.Body, 20, Color.white, TextAnchor.MiddleLeft);
+            }
+
+            // Имя над игроком, как в FIFA
+            Vector3 sp = cam.WorldToScreenPoint(controlled.Position + Vector3.up * 2.9f);
+            if (sp.z > 0f)
+            {
+                float sx = sp.x / UI.Scale, sy = (Screen.height - sp.y) / UI.Scale;
+                UI.Box(new Rect(sx - 70, sy - 16, 140, 28), new Color(0.06f, 0.07f, 0.09f, 0.75f));
+                UI.Label(new Rect(sx - 70, sy - 16, 140, 28), controlled.displayName, UI.Body, 18, Color.yellow, TextAnchor.MiddleCenter);
             }
         }
 
@@ -1257,9 +1279,9 @@ public class MatchManager : MonoBehaviour
             bool def = owner != null && owner.team != HumanTeam;
             string hint = GameInput.UsingGamepad
                 ? (def ? "A (держать) — сдерживание   X — подкат   B — отбор   Y — вратарь   RB — прессинг   LB / R — смена   LT — выжидание"
-                       : "A — пас   B — удар   X — навес   Y — на ход   RB — укрывание / точный   LB — забегание   R — финты   RT — спринт")
+                       : "A — пас   B — удар   X / Y (держать) — навес / на ход   RB — укрывание   LB — забегание / смена   R — финты   RT — спринт")
                 : (def ? "J (держать) — сдерживание   L — подкат   K — отбор   I — вратарь   E — прессинг   Q / TFGH — смена   Space — выжидание"
-                       : "J — пас   K — удар   L — навес   I — на ход   E — укрывание / точный   Q — забегание   TFGH — финты   Shift — спринт");
+                       : "J — пас   K — удар   L / I (держать) — навес / на ход   E — укрывание   Q — забегание / смена   TFGH — финты   Shift — спринт");
             UI.Label(new Rect(0, 1050, w, 30), hint, UI.Body, 18, new Color(1f, 1f, 1f, 0.8f), TextAnchor.MiddleCenter);
         }
     }

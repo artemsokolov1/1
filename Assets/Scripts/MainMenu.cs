@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using UnityEngine;
 
@@ -112,6 +113,8 @@ public class MainMenu : MonoBehaviour
     // навигация геймпадом по кнопкам текущего экрана
     int focus, navIndex, navCount;
     bool activate, padNav, wasVisible;
+    Vector2 pendingNav;                                  // куда сдвинуть выбор (стик / крестовина / стрелки)
+    readonly List<Rect> navRects = new List<Rect>();     // прямоугольники кнопок текущего экрана — для навигации по направлению
     Vector2 lastMouse;
 
     static readonly string[] Roles = { "ВРАТАРЬ", "ЗАЩИТНИК", "ЗАЩИТНИК", "НАПАДАЮЩИЙ", "НАПАДАЮЩИЙ" };
@@ -135,8 +138,8 @@ public class MainMenu : MonoBehaviour
         if (toastTimer > 0f) toastTimer -= Time.unscaledDeltaTime;
 
         bool typing = GUIUtility.keyboardControl != 0;   // курсор в поле ввода — не листаем меню клавишами W/S
-        int nav = typing ? 0 : GameInput.NavVertical();
-        if (nav != 0) { focus += nav; padNav = true; }
+        Vector2 nav = typing ? Vector2.zero : GameInput.NavDir();
+        if (nav != Vector2.zero) { pendingNav = nav; padNav = true; }
         if (GameInput.Down(Btn.Confirm) && !typing) { activate = true; padNav = true; }
 
         // «Назад»: B / Backspace / Esc (в матче Esc — это пауза, её обрабатывает MatchManager)
@@ -182,6 +185,7 @@ public class MainMenu : MonoBehaviour
             lastMouse = e.mousePosition;
         }
         navIndex = 0;
+        if (e.type == EventType.Repaint) navRects.Clear();
 
         if (mm.Paused) DrawPause(mm);
         else if (mm.LastResult != null) DrawResult(mm);
@@ -215,6 +219,8 @@ public class MainMenu : MonoBehaviour
         {
             navCount = navIndex;
             if (navCount > 0) focus = ((focus % navCount) + navCount) % navCount;
+            if (pendingNav != Vector2.zero && navRects.Count > 0) focus = Neighbor(focus, pendingNav);
+            pendingNav = Vector2.zero;
             activate = false;
         }
     }
@@ -227,6 +233,7 @@ public class MainMenu : MonoBehaviour
     {
         int id = navIndex++;
         Event e = Event.current;
+        if (e.type == EventType.Repaint) navRects.Add(r);
         bool hover = r.Contains(e.mousePosition);
         if (hover && !padNav) focus = id;
         bool focused = padNav ? id == focus : hover;
@@ -244,6 +251,32 @@ public class MainMenu : MonoBehaviour
         bool clicked = GUI.Button(r, GUIContent.none, GUIStyle.none);
         if (activate && id == focus && e.type == EventType.Repaint) { activate = false; clicked = true; }
         return clicked;
+    }
+
+    /// <summary>
+    /// Навигация по направлению: ищем ближайшую кнопку в сторону нажатия (сильнее штрафуем смещение поперёк).
+    /// Если в ту сторону ничего нет — перескакиваем на противоположный край той же строки/колонки.
+    /// </summary>
+    int Neighbor(int from, Vector2 dir)
+    {
+        if (from < 0 || from >= navRects.Count) return 0;
+        Vector2 c = navRects[from].center;
+        int best = -1, wrap = -1;
+        float bestScore = float.MaxValue, wrapAlong = float.MaxValue;
+        for (int i = 0; i < navRects.Count; i++)
+        {
+            if (i == from) continue;
+            Vector2 d = navRects[i].center - c;
+            float along = d.x * dir.x + d.y * dir.y;
+            float perp = Mathf.Abs(d.x * dir.y - d.y * dir.x);
+            if (along > 8f)
+            {
+                float score = along + perp * 2.5f;
+                if (score < bestScore) { bestScore = score; best = i; }
+            }
+            else if (along < -8f && perp < 90f && along < wrapAlong) { wrapAlong = along; wrap = i; }
+        }
+        return best >= 0 ? best : wrap >= 0 ? wrap : from;
     }
 
     bool PanelButton(Rect r, string text, int size = 30) =>
@@ -759,10 +792,10 @@ public class MainMenu : MonoBehaviour
             { "Бег / финты", "Левый стик / правый стик", "L3 / R3", "WASD / T F G H" },
             { "Пас низом (с RB — прострел)", "A", "Крест", "J" },
             { "Удар, головой (с RB — закрученный)", "B", "Круг", "K" },
-            { "Навес / длинный / перевод", "X", "Квадрат", "L" },
-            { "Пас на ход (с RB — навесом)", "Y", "Треугольник", "I" },
+            { "Навес / длинный / перевод (держать — сила)", "X", "Квадрат", "L" },
+            { "Пас на ход (держать — сила; с RB — навесом)", "Y", "Треугольник", "I" },
             { "Укрывание корпусом / модификатор", "RB", "R1", "E" },
-            { "Забегание партнёра / смена", "LB", "L1", "Q" },
+            { "С мячом — забегание, без мяча — смена", "LB", "L1", "Q" },
             { "Спринт / медленное ведение", "RT / LT", "R2 / L2", "Shift / Space" },
             { "ОБОРОНА", "", "", "" },
             { "Сдерживание (держать)", "A", "Крест", "J" },

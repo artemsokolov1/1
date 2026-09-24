@@ -31,7 +31,8 @@ public class Ball : MonoBehaviour
     public float holdStiffness = 30f;          // насколько жёстко мяч «прилипает» к ноге при ведении
     public float trapSpeed = 18f;              // быстрее этого (относительно игрока) полевой мяч не остановит вовсе
     public float softTouchSpeed = 12f;         // до этой скорости приём чистый, выше — мяч отскакивает от ноги
-    public float controlledTouchBonus = 3f;    // твоему игроку приём прощается чуть больше
+    public float controlledTouchBonus = 3f;    // (для ИИ-партнёров без паса) приём прощается чуть больше
+    public float receiverTrapSpeed = 26f;      // адресат паса и твой игрок останавливают мяч до этой скорости
     public float keeperCatchSpeed = 20f;       // вратарь ловит медленнее этого…
     public float keeperParrySpeed = 36f;       // …и отбивает до этого
     public float bodyRadius = 0.5f;
@@ -93,6 +94,9 @@ public class Ball : MonoBehaviour
         if (mm == null) return;
         if (mm.Stopped) { Owner = null; return; }   // пауза после гола/аута — мяч ничей
 
+        // Вратарь держит мяч в руках — отобрать нельзя, пока он сам не отдаст
+        if (Owner != null && Owner.role == Role.Keeper && Owner.CanControlBall) return;
+
         Player best = null, parry = null;
         float bestScore = float.MaxValue;
         float y = Body.position.y;
@@ -114,7 +118,7 @@ public class Ball : MonoBehaviour
                     if (rel > keeperParrySpeed) continue;
                     if (rel > keeperCatchSpeed) { parry = p; continue; }   // слишком сильно, чтобы поймать, — отобьёт
                 }
-                else if (rel > trapSpeed) continue;
+                else if (rel > (IsSureReceiver(p, mm) ? receiverTrapSpeed : trapSpeed)) continue;
             }
 
             float score = dist - (p == Owner ? ownerBonus + p.ShieldBonus : 0f);   // отбор решает Player.ResolveTackle
@@ -124,8 +128,9 @@ public class Ball : MonoBehaviour
         if (best == null && parry != null) { Parry(parry); return; }
         if (best == Owner) return;
 
-        // Жёсткое первое касание: полевой принимает быстрый свободный мяч — он отскакивает от ноги
-        if (best != null && Owner == null && best.role == Role.Field)
+        // Жёсткое первое касание: полевой принимает быстрый свободный мяч — он отскакивает от ноги.
+        // Адресат паса и твой игрок принимают чисто: мяч в радиусе должен «прилипать».
+        if (best != null && Owner == null && best.role == Role.Field && !IsSureReceiver(best, mm))
         {
             float rel = Flat(Body.linearVelocity - best.Velocity).magnitude;
             float soft = softTouchSpeed + best.touchBonus + (best.IsControlled ? controlledTouchBonus : 0f);
@@ -140,6 +145,9 @@ public class Ball : MonoBehaviour
             mm.OnPossession(Owner);
         }
     }
+
+    /// <summary>Кто принимает мяч гарантированно чисто: адресат паса и игрок под твоим управлением.</summary>
+    static bool IsSureReceiver(Player p, MatchManager mm) => p == mm.passReceiver || p.IsControlled;
 
     /// <summary>Ведение: мяч тянется к точке перед игроком (или за его корпусом при укрывании) и прижимается к земле.</summary>
     void ApplyControl(Player p)
@@ -200,6 +208,7 @@ public class Ball : MonoBehaviour
         foreach (var p in mm.players)
         {
             if (p.JustKicked || Body.position.y > 2f) continue;   // свой только что отданный мяч не блокируем
+            if (IsSureReceiver(p, mm) && p.CanControlBall) continue;  // адресат не отбивает мяч телом — он его примет
             Vector3 d = Flat(Body.position - p.Position);
             float dist = d.magnitude;
             if (dist >= minDist) continue;

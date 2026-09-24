@@ -32,7 +32,7 @@ public static class GameInput
     const float StickDeadZone = 0.2f;
     static bool rightStickLatched;
     static float navRepeatTimer;
-    static int lastNav;
+    static Vector2 lastNav;
 
     /// <summary>Последнее устройство — геймпад? (для подсказок в HUD)</summary>
     public static bool UsingGamepad { get; private set; }
@@ -140,23 +140,24 @@ public static class GameInput
         return v;
     }
 
-    static int RawNavVertical()
+    /// <summary>Сырое направление навигации по меню в экранных координатах: x — вправо, y — вниз.</summary>
+    static Vector2 RawNav()
     {
-        int n = 0;
+        float x = 0f, y = 0f;
         var k = K;
         if (k != null)
         {
-            if (k.upArrowKey.isPressed || k.wKey.isPressed) n = -1;
-            if (k.downArrowKey.isPressed || k.sKey.isPressed) n = 1;
+            x += (k.rightArrowKey.isPressed || k.dKey.isPressed ? 1f : 0f) - (k.leftArrowKey.isPressed || k.aKey.isPressed ? 1f : 0f);
+            y += (k.downArrowKey.isPressed || k.sKey.isPressed ? 1f : 0f) - (k.upArrowKey.isPressed || k.wKey.isPressed ? 1f : 0f);
         }
         var g = G;
         if (g != null)
         {
-            float y = g.leftStick.ReadValue().y + (g.dpad.up.isPressed ? 1f : 0f) - (g.dpad.down.isPressed ? 1f : 0f);
-            if (y > 0.5f) n = -1;
-            if (y < -0.5f) n = 1;
+            Vector2 st = g.leftStick.ReadValue();
+            x += st.x + (g.dpad.right.isPressed ? 1f : 0f) - (g.dpad.left.isPressed ? 1f : 0f);
+            y += -st.y + (g.dpad.down.isPressed ? 1f : 0f) - (g.dpad.up.isPressed ? 1f : 0f);
         }
-        return n;
+        return Quantize(x, y);
     }
 #else
     static KeyCode KeyOf(Btn b)
@@ -208,11 +209,7 @@ public static class GameInput
     public static Vector2 RightStick() => new Vector2((Input.GetKey(KeyCode.H) ? 1f : 0f) - (Input.GetKey(KeyCode.F) ? 1f : 0f),
                                                      (Input.GetKey(KeyCode.T) ? 1f : 0f) - (Input.GetKey(KeyCode.G) ? 1f : 0f));
 
-    static int RawNavVertical()
-    {
-        float y = Input.GetAxisRaw("Vertical");
-        return y > 0.5f ? -1 : y < -0.5f ? 1 : 0;
-    }
+    static Vector2 RawNav() => Quantize(Input.GetAxisRaw("Horizontal"), -Input.GetAxisRaw("Vertical"));
 #endif
 
     /// <summary>Резкий «флик» правым стиком (как в FIFA) — возвращает направление один раз, пока стик не отпущен.</summary>
@@ -226,15 +223,31 @@ public static class GameInput
         return true;
     }
 
-    /// <summary>Навигация по меню: -1 вверх, +1 вниз, 0 — ничего. С автоповтором при удержании.</summary>
-    public static int NavVertical()
+    /// <summary>Направление стика → одно из четырёх (по большей оси), либо ноль в мёртвой зоне.</summary>
+    static Vector2 Quantize(float x, float y)
     {
-        int n = RawNavVertical();
-        if (n == 0) { lastNav = 0; return 0; }
-        if (n != lastNav) { lastNav = n; navRepeatTimer = 0.4f; return n; }
+        if (Mathf.Abs(x) < 0.5f && Mathf.Abs(y) < 0.5f) return Vector2.zero;
+        return Mathf.Abs(x) > Mathf.Abs(y) ? new Vector2(Mathf.Sign(x), 0f) : new Vector2(0f, Mathf.Sign(y));
+    }
+
+    /// <summary>
+    /// Навигация по меню левым стиком / крестовиной / стрелками: (x — вправо, y — вниз) или ноль.
+    /// Первое нажатие срабатывает сразу, при удержании — автоповтор.
+    /// </summary>
+    public static Vector2 NavDir()
+    {
+        Vector2 n = RawNav();
+        if (n == Vector2.zero) { lastNav = Vector2.zero; return Vector2.zero; }
+        if (n != lastNav) { lastNav = n; navRepeatTimer = 0.4f; UsingGamepad = UsingGamepad || Gamepad_Any(); return n; }
         navRepeatTimer -= Time.unscaledDeltaTime;
-        if (navRepeatTimer > 0f) return 0;
+        if (navRepeatTimer > 0f) return Vector2.zero;
         navRepeatTimer = 0.12f;
         return n;
     }
+
+#if MF_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
+    static bool Gamepad_Any() => G != null && (G.leftStick.ReadValue().sqrMagnitude > 0.25f || G.dpad.ReadValue().sqrMagnitude > 0.25f);
+#else
+    static bool Gamepad_Any() => false;
+#endif
 }

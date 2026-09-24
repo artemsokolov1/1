@@ -14,8 +14,8 @@ public class Player : MonoBehaviour
 {
     [Header("Скорости, м/с")]
     public float aiSpeed = 5.5f;
-    public float runSpeed = 6.2f;          // твой игрок
-    public float sprintSpeed = 8f;         // твой игрок со спринтом (RT)
+    public float runSpeed = 5.8f;          // твой игрок
+    public float sprintSpeed = 8.8f;       // твой игрок со спринтом (RT) — заметно быстрее бега
     public float keeperSpeed = 4.5f;
     public float accel = 35f;
 
@@ -46,6 +46,8 @@ public class Player : MonoBehaviour
     public string displayName;
 
     [HideInInspector] public float charge;       // 0..1 — заряд удара (HUD)
+    [HideInInspector] public float passCharge;   // 0..1 — заряд навеса / паса на ход (HUD)
+    public float passChargeTime = 0.9f;
     [HideInInspector] public float stamina = 1f; // 0..1
 
     MatchManager mm;
@@ -59,7 +61,9 @@ public class Player : MonoBehaviour
     Vector3 slideDir, diveDir, skillVel, openTarget;
     float passBuffer, shotBuffer, bufferedCharge;
     PassKind bufferedPass;
+    float bufferedPassPower = -1f;                // сила навеса/паса на ход (−1 — подбирается автоматически)
     bool bufferedFinesse, shotArmed, headerShot;
+    bool lobArmed, throughArmed, throughLofted;
     bool sprinting, shielding;
 
     // ------------------------------------------------------------ свойства для Ball / MatchManager
@@ -214,7 +218,7 @@ public class Player : MonoBehaviour
         Vector3 cur = Flat(v);
         // На высокой скорости резко развернуться нельзя: при смене направления разгон слабее (инерция)
         float turn = cur.sqrMagnitude > 1f && desiredVel.sqrMagnitude > 1f ? Vector3.Angle(cur, desiredVel) : 0f;
-        float a = Sliding || Tackling || Diving ? accel * 4f : accel * Mathf.Lerp(1f, 0.45f, Mathf.Clamp01(turn / 150f) * Mathf.Clamp01(cur.magnitude / sprintSpeed));
+        float a = Sliding || Tackling || Diving ? accel * 4f : (sprinting ? accel * 1.4f : accel) * Mathf.Lerp(1f, 0.45f, Mathf.Clamp01(turn / 150f) * Mathf.Clamp01(cur.magnitude / sprintSpeed));
         Vector3 flat = Vector3.MoveTowards(cur, desiredVel, a * Time.fixedDeltaTime);
         rb.linearVelocity = new Vector3(flat.x, v.y, flat.z);
 
@@ -234,42 +238,61 @@ public class Player : MonoBehaviour
         bool defending = owner != null && owner.team != team;
         bool modifier = GameInput.Held(Btn.Modifier);   // RB / R1
         bool slow = GameInput.Held(Btn.Jockey);         // LT / L2
+        bool wantSprint = GameInput.Held(Btn.Sprint) && !slow;
+        // Пас летит тебе — игрок сам выходит на мяч; стиком в это время выбираешь направление первого касания
+        bool receiving = mm.passReceiver == this && owner == null && !Ball.Held;
 
         if (taker) desiredVel = Vector3.zero;           // на стандарте стоим, стик только целится
+        else if (receiving) MoveTo(ReceivePoint(), wantSprint ? 1.35f : 1f);
         else
         {
-            bool wantSprint = GameInput.Held(Btn.Sprint) && !slow;
             float spd = wantSprint ? SprintSpeedNow : runSpeed;
             sprinting = wantSprint && dir.sqrMagnitude > 0.1f;
-            if (HasBall && (slow || modifier)) { shielding = true; spd = runSpeed * 0.5f; }  // укрывание корпусом
+            if (role == Role.Keeper) spd = runSpeed * 0.8f;                                   // вратарь с мячом в руках
+            else if (HasBall && (slow || modifier)) { shielding = true; spd = runSpeed * 0.5f; }  // укрывание корпусом
             else if (slow) spd = runSpeed * 0.55f;                                           // выжидание лицом к атаке
             desiredVel = dir * spd;
+            if (role == Role.Keeper) desiredVel = KeepInsideBox(desiredVel);
 
             if (defending && GameInput.Held(Btn.Pass))
-                MoveTo(ContainPoint(owner), 1f);                         // A (держать): сдерживание лицом к лицу
-            else if (!defending && dir.sqrMagnitude < 0.01f && mm.passReceiver == this)
-                MoveTo(ReceivePoint(), 1f);                              // пас тебе — игрок сам выходит на мяч
+                MoveTo(ContainPoint(owner), wantSprint ? 1.3f : 1f);    // A (держать): сдерживание лицом к лицу
         }
         if (dir.sqrMagnitude > 0.01f) aim = dir.normalized;
         if (slow && defending && (BallPos - Position).sqrMagnitude > 0.01f) aim = (BallPos - Position).normalized;
 
         if (defending && !taker)
         {
-            // ---------------- ОБОРОНА
-            if (GameInput.Down(Btn.Lob)) SlideTackle(aim);                 // X / Квадрат — подкат (как в FIFA)
+            // ---------------- ОБОРОНА (смена игрока — LB / правый стик — в MatchManager, работает всегда)
+            if (GameInput.Down(Btn.Lob)) SlideTackle(aim);                 // X / Квадрат — подкат
             if (GameInput.Down(Btn.Shoot)) StandingTackle();               // B / Круг — отбор, толчок корпусом
             if (GameInput.Held(Btn.Through)) mm.RequestKeeperRush();       // Y / Треугольник — выход вратаря
             if (GameInput.Held(Btn.Modifier)) mm.RequestTeammatePress();   // RB / R1 — прессинг партнёра
-            if (GameInput.Down(Btn.Switch)) mm.SwitchControl();            // LB / L1 — смена игрока
-            else if (GameInput.RightStickFlick(out Vector2 rsd)) mm.SwitchControlDir(mm.CameraRelative(rsd));
-            charge = 0f; passBuffer = 0f; shotBuffer = 0f; shotArmed = false;
+            charge = 0f; passCharge = 0f; passBuffer = 0f; shotBuffer = 0f;
+            shotArmed = false; lobArmed = false; throughArmed = false;
             return;
         }
 
         // ---------------- АТАКА / СВОБОДНЫЙ МЯЧ
-        if (GameInput.Down(Btn.Pass)) { passBuffer = 0.25f; bufferedPass = modifier ? PassKind.Driven : PassKind.Ground; headerBuffer = 0.3f; headerShot = false; }
-        if (GameInput.Down(Btn.Lob)) { passBuffer = 0.25f; bufferedPass = PassKind.Lob; }
-        if (GameInput.Down(Btn.Through)) { passBuffer = 0.25f; bufferedPass = modifier ? PassKind.LobThrough : PassKind.Through; }
+        // A — пас по земле: сразу, сила подбирается автоматически (с RB — прострел)
+        if (GameInput.Down(Btn.Pass)) { passBuffer = 0.25f; bufferedPass = modifier ? PassKind.Driven : PassKind.Ground; bufferedPassPower = -1f; headerBuffer = 0.3f; headerShot = false; }
+
+        // X — навес и Y — пас на ход: держишь — набираешь силу (дальность), отпускаешь — удар
+        if (GameInput.Down(Btn.Lob)) { lobArmed = true; throughArmed = false; passCharge = 0f; }
+        if (GameInput.Down(Btn.Through)) { throughArmed = true; lobArmed = false; passCharge = 0f; throughLofted = modifier; }
+        if (lobArmed && GameInput.Held(Btn.Lob) || throughArmed && GameInput.Held(Btn.Through))
+            passCharge = Mathf.Min(1f, passCharge + Time.deltaTime / passChargeTime);
+        if (lobArmed && GameInput.Up(Btn.Lob))
+        {
+            passBuffer = 0.3f; bufferedPass = PassKind.Lob; bufferedPassPower = passCharge;
+            lobArmed = false; passCharge = 0f;
+        }
+        if (throughArmed && GameInput.Up(Btn.Through))
+        {
+            passBuffer = 0.3f; bufferedPass = throughLofted ? PassKind.LobThrough : PassKind.Through; bufferedPassPower = passCharge;
+            throughArmed = false; passCharge = 0f;
+        }
+
+        // B — удар (держать — сильнее; с RB — закрученный). У вратаря — выбивание.
         if (GameInput.Down(Btn.Shoot)) { shotArmed = true; headerBuffer = 0.3f; headerShot = true; }
         if (shotArmed && GameInput.Held(Btn.Shoot)) charge = Mathf.Min(1f, charge + Time.deltaTime / chargeTime);
         if (shotArmed && GameInput.Up(Btn.Shoot))
@@ -292,33 +315,37 @@ public class Player : MonoBehaviour
             bool ok;
             switch (bufferedPass)
             {
-                case PassKind.Lob: ok = TryLob(aim, false); break;
-                case PassKind.LobThrough: ok = TryLob(aim, true); break;
-                case PassKind.Through: ok = TryThrough(aim) || TryPass(aim, 70f, false); break;
+                case PassKind.Lob: ok = TryLob(aim, false, bufferedPassPower); break;
+                case PassKind.LobThrough: ok = TryLob(aim, true, bufferedPassPower); break;
+                case PassKind.Through: ok = TryThrough(aim, bufferedPassPower) || TryPass(aim, 70f, false); break;
                 case PassKind.Driven: ok = TryPass(aim, 70f, true); break;
                 default: ok = TryPass(aim, 70f, false); break;
             }
-            if (!ok && taker) Kick(aim, 12f, 0.3f, null);   // на стандарте не застреваем, даже если некому
+            if (!ok && (taker || role == Role.Keeper)) Kick(aim, 12f, 0.3f, null);   // на стандарте не застреваем
         }
         if (shotBuffer > 0f && CanKick)
         {
             shotBuffer = 0f;
-            Shoot(aim, bufferedCharge, bufferedFinesse);
+            if (role == Role.Keeper) DropKick(aim, bufferedCharge);
+            else Shoot(aim, bufferedCharge, bufferedFinesse);
         }
+    }
 
-        // LB / L1: с мячом — забегание партнёра, без мяча — смена игрока
-        if (GameInput.Down(Btn.Switch))
-        {
-            if (HasBall || taker) mm.CallRun(this);
-            else mm.SwitchControl();
-        }
-        // Правый стик: с мячом — финт, без мяча — смена игрока в направлении стика
-        if (GameInput.RightStickFlick(out Vector2 rs))
-        {
-            Vector3 d = mm.CameraRelative(rs);
-            if (HasBall) SkillMove(d);
-            else if (!taker) mm.SwitchControlDir(d);
-        }
+    /// <summary>Вратарь с мячом в руках не выходит за пределы штрафной.</summary>
+    Vector3 KeepInsideBox(Vector3 vel)
+    {
+        float gx = mm.OwnGoalX(team);
+        Vector3 next = Position + vel * 0.15f;
+        if (Mathf.Abs(next.x - gx) > mm.boxDepth - 0.3f || Mathf.Sign(next.x - gx) == Mathf.Sign(gx)) vel.x = 0f;
+        if (Mathf.Abs(next.z) > mm.boxHalfWidth - 0.3f) vel.z = 0f;
+        return vel;
+    }
+
+    /// <summary>Вратарь выбивает мяч с рук (B): далеко и высоко, сила — от заряда.</summary>
+    void DropKick(Vector3 dir, float power01)
+    {
+        if (!CanKick) return;
+        Kick(dir, Mathf.Lerp(16f, 26f, power01), Mathf.Lerp(6f, 10f, power01), null, 0f, 0.15f);
     }
 
     /// <summary>
@@ -326,7 +353,7 @@ public class Player : MonoBehaviour
     /// вперёд — толчок мяча на ход и рывок; назад — протяжка с разворотом; в сторону — уход с мячом в сторону.
     /// Во время финта мяч сложнее отобрать.
     /// </summary>
-    void SkillMove(Vector3 d)
+    public void SkillMove(Vector3 d)
     {
         if (d.sqrMagnitude < 0.01f) return;
         Vector3 f = Facing;
@@ -800,8 +827,11 @@ public class Player : MonoBehaviour
         return true;
     }
 
-    /// <summary>Пас на ход (Y): мяч уходит в свободную зону в 5 м перед партнёром.</summary>
-    bool TryThrough(Vector3 prefDir)
+    /// <summary>
+    /// Пас на ход (Y): мяч уходит в свободную зону перед партнёром. Сила (заряд) задаёт, насколько далеко
+    /// «на ход»: короткое нажатие — 3 м перед ним, полный заряд — 9 м. power01 &lt; 0 — автоматически (ИИ).
+    /// </summary>
+    bool TryThrough(Vector3 prefDir, float power01 = -1f)
     {
         if (!CanKick) return false;
         Player mate = mm.FindPassTarget(this, prefDir, 70f, false);
@@ -810,10 +840,11 @@ public class Player : MonoBehaviour
         Vector3 run = mate.Velocity.sqrMagnitude > 1f
             ? (mate.AttackDir * 0.6f + mate.Velocity.normalized * 0.4f).normalized
             : mate.AttackDir;
-        Vector3 target = mm.ClampToField(mate.Position + run * 5f, 1f);
+        float lead = power01 < 0f ? 5f : Mathf.Lerp(3f, 9f, power01);
+        Vector3 target = mm.ClampToField(mate.Position + run * lead, 1f);
         float d = Vector3.Distance(BallPos, target);
         const float arrive = 5f;
-        float power = Mathf.Clamp(Mathf.Sqrt(arrive * arrive + 2f * Ball.rollDecel * (d + 1f)), 10f, 22f);
+        float power = Mathf.Clamp(Mathf.Sqrt(arrive * arrive + 2f * Ball.rollDecel * (d + 1f)), 10f, 24f);
         Kick(target - BallPos, power, 0f, mate);
         return true;
     }
@@ -821,15 +852,40 @@ public class Player : MonoBehaviour
     /// <summary>
     /// Навес / длинный пас / перевод (X) или пас на ход навесом (RB+Y). Мяч летит по дуге над игроками
     /// с лёгким обратным вращением; скорость рассчитана на время полёта с поправкой на сопротивление воздуха.
+    /// Сила (заряд X) задаёт дальность: 8…34 м. Если в направлении прицела есть партнёр примерно на этой
+    /// дистанции — мяч летит ему, иначе — в точку. power01 &lt; 0 — дальность подбирается под партнёра (ИИ).
     /// </summary>
-    bool TryLob(Vector3 prefDir, bool throughBall)
+    bool TryLob(Vector3 prefDir, bool throughBall, float power01 = -1f)
     {
         if (!CanKick) return false;
-        Player mate = mm.FindPassTarget(this, prefDir, 70f, true, 36f);
-        Vector3 target = mate != null
-            ? mate.Position + (throughBall ? mate.AttackDir * 5f : mate.Velocity * 0.8f)
-            : BallPos + Flat(prefDir).normalized * 14f;
+        prefDir = Flat(prefDir).normalized;
+        Player mate;
+        Vector3 target;
+        if (power01 < 0f)
+        {
+            mate = mm.FindPassTarget(this, prefDir, 70f, true, 36f);
+            target = mate != null ? mate.Position : BallPos + prefDir * 14f;
+        }
+        else
+        {
+            float want = Mathf.Lerp(8f, 34f, power01);
+            mate = null;
+            float bestScore = float.MaxValue;
+            foreach (var p in mm.players)
+            {
+                if (p == this || p.team != team || p.role == Role.Keeper) continue;
+                Vector3 to = p.Position - Position;
+                float angle = Vector3.Angle(prefDir, to);
+                float miss = Mathf.Abs(to.magnitude - want);
+                if (angle > 45f || miss > 9f) continue;
+                float score = angle + miss * 2f;
+                if (score < bestScore) { bestScore = score; mate = p; }
+            }
+            target = mate != null ? mate.Position : BallPos + prefDir * want;
+        }
+        if (mate != null) target += throughBall ? mate.AttackDir * 5f : mate.Velocity * 0.8f;
         target = mm.ClampToField(target, 0.5f);
+
         Vector3 d = target - BallPos;
         float dist = Mathf.Min(d.magnitude, 36f);
         float flight = Mathf.Clamp(0.55f + dist * 0.045f, 0.7f, 1.8f);
