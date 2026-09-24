@@ -69,6 +69,7 @@ public class Player : MonoBehaviour
     bool tackleResolved;
     float diveTimer, diveCooldown, skillTimer, headerBuffer, openTimer;
     float shotSeenAt = -1f, afterPassRunUntil, slideCooldown;
+    float slideElapsed, slideVisualTimer, fallTimer;
     Vector3 slideDir, diveDir, skillVel, openTarget;
     float passBuffer, shotBuffer, bufferedCharge;
     PassKind bufferedPass;
@@ -172,6 +173,7 @@ public class Player : MonoBehaviour
         desiredVel = Vector3.zero; aim = facing;
         charge = 0f; kickCooldown = 0f; lostTimer = 0f; passBuffer = 0f; shotBuffer = 0f; shotArmed = false;
         tackleTimer = 0f; slideTimer = 0f; recoverTimer = 0f; diveTimer = 0f; skillTimer = 0f; headerBuffer = 0f;
+        slideVisualTimer = 0f; fallTimer = 0f;
     }
 
     /// <summary>Подключить 3D-модель: капсула остаётся физикой, модель только показывает и анимирует.</summary>
@@ -195,17 +197,30 @@ public class Player : MonoBehaviour
             // Полный бег в смеси уже с 2.5 м/с, дальше скорость воспроизведения = реальная скорость / скорость анимации.
             anim.SetFloat(SpeedHash, speed * (PlayerModelRunThreshold / 2.5f));
             anim.speed = speed > 2.5f ? Mathf.Clamp(speed / animRunSpeed, 1f, 2.5f) : 1f;
+            if (slideVisualTimer > 0f || fallTimer > 0f) anim.speed = 0.05f;   // в подкате/падении ноги не «бегут»
         }
         Quaternion rot = Quaternion.identity;
         Vector3 pos = new Vector3(0f, -1f, 0f);
-        if (Sliding) rot = Quaternion.Euler(-70f, 0f, 0f);             // ноги вперёд, корпус назад (опора — стопы)
+        float rate = 18f;
+        if (slideVisualTimer > 0f)
+        {
+            // Подкат: ложимся на бок-спину ногами вперёд по ходу подката (поворот вокруг стоп), пока не встанем
+            rot = Quaternion.Euler(-78f, 0f, 0f);
+            pos.y = -0.95f;
+            rate = 30f;
+        }
+        else if (fallTimer > 0f)
+        {
+            rot = Quaternion.Euler(80f, 0f, 0f);                          // сбили — падает вперёд
+            rate = 22f;
+        }
         else if (Diving)
         {
             float side = Vector3.Dot(diveDir, transform.right) >= 0f ? -1f : 1f;   // падаем в сторону прыжка
             rot = Quaternion.Euler(0f, 0f, 75f * side);
             pos.y = -0.8f;                                                  // немного над газоном — в полёте
         }
-        float k = 1f - Mathf.Exp(-18f * Time.deltaTime);
+        float k = 1f - Mathf.Exp(-rate * Time.deltaTime);
         model.localRotation = Quaternion.Slerp(model.localRotation, rot, k);
         model.localPosition = Vector3.Lerp(model.localPosition, pos, k);
     }
@@ -222,6 +237,7 @@ public class Player : MonoBehaviour
         kickCooldown -= dt; lostTimer -= dt; thinkTimer -= dt; openTimer -= dt;
         passBuffer -= dt; shotBuffer -= dt; headerBuffer -= dt;
         tackleTimer -= dt; tackleCooldown -= dt; recoverTimer -= dt; diveCooldown -= dt; slideCooldown -= dt;
+        slideVisualTimer -= dt; fallTimer -= dt;
         holdTimer = HasBall ? holdTimer + dt : 0f;
 
         // Выносливость: спринт тратит, шаг восстанавливает
@@ -276,7 +292,8 @@ public class Player : MonoBehaviour
         if (useAim && !mm.IsTaker(this) && skillTimer <= 0f && flat.magnitude > 1.5f) useAim = false;
         Vector3 face = Sliding ? slideDir : useAim ? aim : flat;
         if (!useAim && !Sliding && flat.sqrMagnitude < 1f) face = BallPos - Position;   // стоим — смотрим на мяч
-        if (face.sqrMagnitude > 0.01f)
+        bool lying = (slideVisualTimer > 0f && !Sliding) || fallTimer > 0f;    // лежим — не крутимся
+        if (face.sqrMagnitude > 0.01f && !lying)
             rb.MoveRotation(Quaternion.Slerp(rb.rotation, Quaternion.LookRotation(face), 14f * Time.fixedDeltaTime));
     }
 
@@ -796,31 +813,56 @@ public class Player : MonoBehaviour
         if (Flat(dir).sqrMagnitude < 0.01f) dir = Facing;
         slideDir = Flat(dir).normalized;
         slideTimer = slideTime;
+        slideElapsed = 0f;
+        slideVisualTimer = slideTime + slideRecover;   // модель лежит весь подкат и пока встаёт
         slideCooldown = slideTime + slideRecover + 0.15f;   // своя перезарядка: сразу после вставания можно снова
     }
 
     /// <summary>Подкат: едем по инерции. Сначала мяч — чисто выбили; сначала соперник (обычно сзади) — фол.</summary>
+    /// <summary>
+    /// Подкат: едем по газону. Если первым достал мяч — чисто выбил его. Если первым врезался в соперника:
+    /// контакт засчитывается только после начала подката (0.08 с), вплотную (≤ 0.6 м) и если соперник впереди по ходу
+    /// подката. Сзади — почти всегда фол, спереди у мяча — иногда, иначе чистый отбор. Соперник в любом случае падает.
+    /// </summary>
     void SlideUpdate(float dt)
     {
         slideTimer -= dt;
+        slideElapsed += dt;
         desiredVel = slideDir * slideSpeed;
-        if (!Ball.Held && Vector3.Distance(Position, BallPos) < 1.2f && Ball.Body.position.y < 1f)
+        if (!Ball.Held && Vector3.Distance(Position, BallPos) < 1.1f && Ball.Body.position.y < 1f)
         {
             Vector3 poke = (slideDir + new Vector3(Random.Range(-0.3f, 0.3f), 0f, Random.Range(-0.3f, 0.3f))).normalized;
             Kick(poke, 9f, 0.6f, null);
             slideTimer = 0f;
         }
-        else
+        else if (slideElapsed > 0.08f)
         {
             foreach (var o in mm.players)
             {
-                if (o.team == team || Vector3.Distance(o.Position, Position) > 0.85f) continue;
-                mm.OnFoul(this, o);
+                if (o.team == team) continue;
+                Vector3 to = o.Position - Position;
+                float d = to.magnitude;
+                if (d > 0.6f || d < 0.001f || Vector3.Dot(slideDir, to / d) < 0.3f) continue;   // не впереди — не задел
+
+                bool fromBehind = Vector3.Dot(o.Facing, slideDir) > 0.5f;                       // бежим в одну сторону — подкат сзади
+                bool nearBall = o.HasBall || Vector3.Distance(o.Position, BallPos) < 1.5f;
+                float foulChance = fromBehind ? 0.85f : nearBall ? 0.3f : 0.15f;
+                if (o.HasBall) Kick((BallPos - o.Position).normalized + slideDir, 5f, 0.2f, null);   // мяч в любом случае уходит от него
+                o.Trip();
+                if (Random.value < foulChance) mm.OnFoul(this, o);
                 slideTimer = 0f;
                 break;
             }
         }
         if (slideTimer <= 0f) recoverTimer = slideRecover;
+    }
+
+    /// <summary>Сбили подкатом — падает и секунду не участвует в игре.</summary>
+    public void Trip()
+    {
+        recoverTimer = 0.8f;
+        fallTimer = 0.9f;
+        slideTimer = 0f;
     }
 
     // ------------------------------------------------------------ удары и пасы
