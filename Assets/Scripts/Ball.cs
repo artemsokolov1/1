@@ -16,28 +16,28 @@ using UnityEngine;
 [RequireComponent(typeof(SphereCollider))]
 public class Ball : MonoBehaviour
 {
-    [Header("Полёт")]
-    public float dragK = 0.012f;               // квадратичное сопротивление воздуха
-    public float magnusK = 0.012f;             // сила Магнуса на единицу вращения
-    public float spinDecay = 0.6f;             // затухание вращения в воздухе, 1/с (на земле — в 4 раза быстрее)
-    public float rollDecel = 2.2f;             // трение качения по газону, м/с² (мяч катится дальше — пасы «летят» по траве)
-    public float maxSpeed = 34f;
-    [Range(0f, 1f)] public float bounciness = 0.5f;
+    // --- Полёт
+    [System.NonSerialized] public float dragK = 0.012f;               // квадратичное сопротивление воздуха
+    [System.NonSerialized] public float magnusK = 0.012f;             // сила Магнуса на единицу вращения
+    [System.NonSerialized] public float spinDecay = 0.6f;             // затухание вращения в воздухе, 1/с (на земле — в 4 раза быстрее)
+    [System.NonSerialized] public float rollDecel = 2.2f;             // трение качения по газону, м/с² (мяч катится дальше — пасы «летят» по траве)
+    [System.NonSerialized] public float maxSpeed = 34f;
+    [System.NonSerialized] public float bounciness = 0.5f;
 
-    [Header("Контроль мяча")]
-    public float diameter = 0.28f;             // размер мяча, м (настоящий — 0.22; чуть крупнее, чтобы было видно)
-    public float holdDistance = 0.34f;         // мяч ровно в ногах при обычном ведении
-    public float sprintHoldDistance = 0.55f;   // на спринте чуть впереди — мяч легче отобрать
-    public float shieldHoldDistance = 0.42f;   // при укрывании мяч с дальней от соперника стороны
-    public float holdStiffness = 70f;          // насколько жёстко мяч «прилипает» к ноге (ограничено 0.9/dt — без дрожи)
-    public float trapSpeed = 18f;              // быстрее этого (относительно игрока) полевой мяч не остановит вовсе
-    public float softTouchSpeed = 12f;         // до этой скорости приём чистый, выше — мяч отскакивает от ноги
-    public float controlledTouchBonus = 3f;    // (для ИИ-партнёров без паса) приём прощается чуть больше
-    public float receiverTrapSpeed = 26f;      // адресат паса и твой игрок останавливают мяч до этой скорости
-    public float keeperCatchSpeed = 14f;       // вратарь ловит медленнее этого…
-    public float keeperParrySpeed = 28f;       // …и отбивает до этого (сильнее — мяч проходит мимо рук)
-    public float bodyRadius = 0.35f;
-    public float ownerBonus = 0.35f;           // чтобы отобрать мяч, нужно быть ближе владельца на столько
+    // --- Контроль мяча
+    [System.NonSerialized] public float diameter = 0.28f;             // размер мяча, м (настоящий — 0.22; чуть крупнее, чтобы было видно)
+    [System.NonSerialized] public float holdDistance = 0.3f;          // мяч ровно в ногах при обычном ведении
+    [System.NonSerialized] public float sprintHoldDistance = 0.45f;   // на спринте чуть впереди — мяч легче отобрать
+    [System.NonSerialized] public float shieldHoldDistance = 0.38f;   // при укрывании мяч с дальней от соперника стороны
+    [System.NonSerialized] public float holdStiffness = 70f;          // насколько жёстко мяч «прилипает» к ноге (ограничено 0.9/dt — без дрожи)
+    [System.NonSerialized] public float trapSpeed = 18f;              // быстрее этого (относительно игрока) полевой мяч не остановит вовсе
+    [System.NonSerialized] public float softTouchSpeed = 12f;         // до этой скорости приём чистый, выше — мяч отскакивает от ноги
+    [System.NonSerialized] public float controlledTouchBonus = 3f;    // (для ИИ-партнёров без паса) приём прощается чуть больше
+    [System.NonSerialized] public float receiverTrapSpeed = 26f;      // адресат паса и твой игрок останавливают мяч до этой скорости
+    [System.NonSerialized] public float keeperCatchSpeed = 14f;       // вратарь ловит медленнее этого…
+    [System.NonSerialized] public float keeperParrySpeed = 28f;       // …и отбивает до этого (сильнее — мяч проходит мимо рук)
+    [System.NonSerialized] public float bodyRadius = 0.35f;
+    [System.NonSerialized] public float ownerBonus = 0.35f;           // чтобы отобрать мяч, нужно быть ближе владельца на столько
 
     public Rigidbody Body { get; private set; }
     public SphereCollider Col { get; private set; }

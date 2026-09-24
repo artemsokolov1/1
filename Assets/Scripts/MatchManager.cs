@@ -27,27 +27,27 @@ public class MatchManager : MonoBehaviour
     public Ball ball;
     public Camera cam;
 
-    [Header("Размеры поля, м")]
-    public float length = 40f, width = 24f;
-    public float goalWidth = 6f, goalHeight = 2f, goalDepth = 2f;
-    public float boxDepth = 5f, boxHalfWidth = 5f;   // штрафная
+    // --- Размеры поля, м
+    [System.NonSerialized] public float length = 40f, width = 24f;
+    [System.NonSerialized] public float goalWidth = 6f, goalHeight = 2f, goalDepth = 2f;
+    [System.NonSerialized] public float boxDepth = 5f, boxHalfWidth = 5f;   // штрафная
 
-    [Header("Паузы")]
-    public float goalPause = 1.5f;
-    public float outPause = 1f;
-    public float resultScreenTime = 4f;
+    // --- Паузы
+    [System.NonSerialized] public float goalPause = 1.5f;
+    [System.NonSerialized] public float outPause = 1f;
+    [System.NonSerialized] public float resultScreenTime = 4f;
 
-    [Header("Камера сбоку (трансляция)")]
-    public float sidePitch = 50f, sideFov = 40f, sideDistance = 30f;
-    [Header("Умная камера")]
-    public float smartDistance = 24f;     // базовая дистанция (ближе широкой трансляции)
-    public float smartZoomOut = 0.6f;     // на сколько отъезжать за каждый метр разрыва «игрок — мяч» сверх 5 м
-    public float lookAhead = 0.3f;        // упреждение по скорости мяча, с
-    public float camDamp = 0.35f;         // сглаживание (SmoothDamp), с
-    [Header("Камера изометрия")]
-    public Vector3 isoAngles = new Vector3(45f, 45f, 0f);
-    public float isoSize = 11f, isoDistance = 40f;
-    public float camSmooth = 4f;
+    // --- Камера сбоку (трансляция)
+    [System.NonSerialized] public float sidePitch = 50f, sideFov = 40f, sideDistance = 30f;
+    // --- Умная камера
+    [System.NonSerialized] public float smartDistance = 24f;     // базовая дистанция (ближе широкой трансляции)
+    [System.NonSerialized] public float smartZoomOut = 0.6f;     // на сколько отъезжать за каждый метр разрыва «игрок — мяч» сверх 5 м
+    [System.NonSerialized] public float lookAhead = 0.3f;        // упреждение по скорости мяча, с
+    [System.NonSerialized] public float camDamp = 0.35f;         // сглаживание (SmoothDamp), с
+    // --- Камера изометрия
+    [System.NonSerialized] public Vector3 isoAngles = new Vector3(45f, 45f, 0f);
+    [System.NonSerialized] public float isoSize = 11f, isoDistance = 40f;
+    [System.NonSerialized] public float camSmooth = 4f;
 
     [HideInInspector] public List<Player> players = new List<Player>();
     [HideInInspector] public Player controlled;      // кем ты сейчас управляешь
@@ -367,11 +367,7 @@ public class MatchManager : MonoBehaviour
         shakeTime -= dt;
         cam.transform.position = pos2 + ShakeOffset(dt);
         cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, rot, k);
-        if (!cam.orthographic)
-        {
-            bool sprint = controlled != null && controlled.IsSprinting && controlled.Velocity.magnitude > controlled.runSpeed;
-            cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, sideFov + (sprint ? 5f : 0f), 1f - Mathf.Exp(-3f * dt));
-        }
+        if (!cam.orthographic) cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, sideFov, 1f - Mathf.Exp(-3f * dt));
     }
 
     Vector3 lastShake;

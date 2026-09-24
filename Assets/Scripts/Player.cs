@@ -17,11 +17,12 @@ public class Player : MonoBehaviour
     public float runSpeed = 5.8f;          // твой игрок
     public float sprintSpeed = 9f;         // твой игрок со спринтом (RT) — заметно быстрее бега
     public float keeperSpeed = 4f;
-    [Header("Инерция (как в FIFA): рывок с места, разгон, торможение, повороты по дуге")]
-    public float accel = 16f;              // ускорение с места, м/с² (к максимальной скорости падает)
-    public float braking = 24f;            // торможение, м/с²
-    public float turnRateSlow = 900f;      // скорость поворота шагом, °/с
-    public float turnRateFast = 230f;      // на полном спринте, °/с — разворот по дуге, а не на месте
+    [Header("Движение: быстрый отклик, лёгкая инерция только на полном спринте")]
+    public float accel = 42f;              // ускорение, м/с² (до бега ~0.15 с, до спринта ~0.3 с)
+    public float braking = 55f;            // торможение, м/с²
+    public float turnRateSlow = 2000f;     // скорость поворота на бегу, °/с (почти мгновенно)
+    public float turnRateFast = 800f;      // на полном спринте, °/с — чуть шире дуга, но без «слоу-мо»
+    public float animRunSpeed = 3.6f;      // с какой скоростью (м/с) «бежит» анимация бега Mixamo при воспроизведении 1×
 
     [Header("Выносливость (0…1)")]
     public float staminaDrain = 0.035f;    // в секунду спринта (полный запас — ~30 с непрерывного спринта)
@@ -60,6 +61,7 @@ public class Player : MonoBehaviour
     Transform model;                     // 3D-модель (если есть): анимируется по скорости
     Animator anim;
     static readonly int SpeedHash = Animator.StringToHash("Speed");
+    const float PlayerModelRunThreshold = 5.5f;   // порог «бег» в аниматоре (PlayerModelSetup.RunThreshold)
     Vector3 desiredVel;
     Vector3 aim;
     float kickCooldown, lostTimer, thinkTimer, holdTimer;
@@ -189,8 +191,10 @@ public class Player : MonoBehaviour
         float speed = Velocity.magnitude;
         if (anim != null)
         {
-            anim.SetFloat(SpeedHash, speed);
-            anim.speed = speed > 6f ? Mathf.Min(speed / 6f, 1.6f) : 1f;
+            // Бег Mixamo — трусца ~3.6 м/с, а игроки бегают 5.5–9 м/с: без ускорения ноги «плывут» (эффект слоу-мо).
+            // Полный бег в смеси уже с 2.5 м/с, дальше скорость воспроизведения = реальная скорость / скорость анимации.
+            anim.SetFloat(SpeedHash, speed * (PlayerModelRunThreshold / 2.5f));
+            anim.speed = speed > 2.5f ? Mathf.Clamp(speed / animRunSpeed, 1f, 2.5f) : 1f;
         }
         Quaternion rot = Quaternion.identity;
         Vector3 pos = new Vector3(0f, -1f, 0f);
@@ -279,9 +283,8 @@ public class Player : MonoBehaviour
     /// <summary>
     /// Модель движения с инерцией:
     ///  • скорость и направление меняются раздельно;
-    ///  • ускорение максимально с места (рывок) и падает к максимальной скорости — до спринта ~1 с;
-    ///  • скорость поворота зависит от скорости: шагом — почти на месте, на спринте — по широкой дуге;
-    ///  • резкий разворот (> 100°) на скорости — сначала торможение «на опорной ноге»;
+    ///  • разгон быстрый (до бега ~0.15 с, до спринта ~0.3 с), торможение ещё быстрее;
+    ///  • на бегу поворот почти мгновенный, на полном спринте — немного шире дуга;
     ///  • с мячом повороты чуть медленнее.
     /// </summary>
     Vector3 Locomotion(Vector3 cur, Vector3 want, float dt)
@@ -293,14 +296,13 @@ public class Player : MonoBehaviour
         if (wantSpeed > 0.01f)
         {
             Vector3 wantDir = want / wantSpeed;
-            float angle = Vector3.Angle(dir, wantDir);
-            float turnRate = Mathf.Lerp(turnRateSlow, turnRateFast, Mathf.Clamp01(speed / sprintSpeed)) * (HasBall ? 0.8f : 1f);
+            float sprintK = Mathf.Clamp01((speed - runSpeed) / Mathf.Max(sprintSpeed - runSpeed, 0.1f));   // 0 — бег, 1 — полный спринт
+            float turnRate = Mathf.Lerp(turnRateSlow, turnRateFast, sprintK) * (HasBall ? 0.9f : 1f);
             dir = Vector3.RotateTowards(dir, wantDir, turnRate * Mathf.Deg2Rad * dt, 0f);
-            if (angle > 100f && speed > 3f) wantSpeed = Mathf.Min(wantSpeed, speed * 0.4f);   // разворот — сначала тормозим
         }
 
         float top = Mathf.Max(sprintSpeed, 1f);
-        float a = wantSpeed > speed ? accel * (1f - 0.65f * Mathf.Clamp01(speed / top)) : braking;
+        float a = wantSpeed > speed ? accel * (1f - 0.3f * Mathf.Clamp01(speed / top)) : braking;
         speed = Mathf.MoveTowards(speed, wantSpeed, a * dt);
         return dir * speed;
     }
