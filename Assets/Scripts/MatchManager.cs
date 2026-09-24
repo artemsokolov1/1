@@ -263,8 +263,9 @@ public class MatchManager : MonoBehaviour
         if (autoSwitchAt > 0f && Time.time >= autoSwitchAt) { autoSwitchAt = 0f; DoAutoSwitch(); }
         HandleSwitchInput();
         LooseBallAutoSelect();
-        // Вратарём управляешь только пока мяч у него: отдал — управление переходит к полевому
-        if (controlled != null && controlled.role == Role.Keeper && !controlled.HasBall && !IsTaker(controlled))
+        // Вратарём управляешь, пока мяч у него или идёт к нему; отдал — управление переходит к полевому
+        if (controlled != null && controlled.role == Role.Keeper && !controlled.HasBall && !IsTaker(controlled)
+            && !BallComingToKeeper(controlled))
         {
             Player best = BestInterceptor(out _);
             if (best != null) controlled = best;
@@ -605,7 +606,7 @@ public class MatchManager : MonoBehaviour
         passReceiver = receiver;
         passTimer = 2.5f;
         // Твоя команда отдала пас — управление сразу переходит к адресату
-        if (receiver != null && receiver.team == HumanTeam && receiver.role == Role.Field) controlled = receiver;
+        if (receiver != null && receiver.team == HumanTeam) controlled = receiver;   // и полевому, и вратарю
         // Соперник отдал пас/ударил — автосмена на того, кто лучше успевает к мячу
         else if (kicker.team != HumanTeam) ScheduleAutoSwitch(lofted, false);
         // Твой вратарь выбил мяч никому конкретно — сразу даём полевого, ближайшего к полёту мяча
@@ -650,7 +651,7 @@ public class MatchManager : MonoBehaviour
         if (Profile.Current.autoSwitch == 2 || Time.time < manualSwitchUntil || Time.time < looseSwitchCooldown) return;
         if (passReceiver != null && passReceiver.team == HumanTeam) return;
         Player best = BestInterceptor(out float bestD);
-        float cur = controlled.role == Role.Keeper ? float.MaxValue : DistanceToBallPath(controlled);
+        float cur = controlled.role == Role.Keeper && !BallComingToKeeper(controlled) ? float.MaxValue : DistanceToBallPath(controlled);
         if (best != null && best != controlled && cur - bestD > 1f)
         {
             controlled = best;
@@ -700,11 +701,22 @@ public class MatchManager : MonoBehaviour
         bestD = float.MaxValue;
         foreach (var p in players)
         {
-            if (p.team != HumanTeam || p.role != Role.Field) continue;
+            if (p.team != HumanTeam) continue;
+            if (p.role == Role.Keeper && !BallComingToKeeper(p)) continue;   // вратарь — только если мяч идёт к нему
             float d = DistanceToBallPath(p);
             if (d < bestD) { bestD = d; best = p; }
         }
         return best;
+    }
+
+    /// <summary>Мяч идёт к вратарю: пас ему или ничей мяч остановится в его штрафной.</summary>
+    bool BallComingToKeeper(Player k)
+    {
+        if (passReceiver == k) return true;
+        if (ball.Owner != null || ball.Held) return false;
+        Vector3 rest = ball.PredictRest();
+        float gx = OwnGoalX(k.team);
+        return Mathf.Abs(rest.x - gx) < boxDepth + 0.5f && Mathf.Abs(rest.z) < boxHalfWidth + 0.5f;
     }
 
     float DistanceToBallPath(Player p)

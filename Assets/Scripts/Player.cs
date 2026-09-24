@@ -13,12 +13,12 @@ public enum PassKind { Ground, Driven, Lob, Through, LobThrough }
 public class Player : MonoBehaviour
 {
     [Header("Скорости, м/с")]
-    public float aiSpeed = 5.5f;
-    public float runSpeed = 5.8f;          // твой игрок
-    public float sprintSpeed = 9f;         // твой игрок со спринтом (RT) — заметно быстрее бега
-    public float keeperSpeed = 4f;
+    public float aiSpeed = 4.7f;
+    public float runSpeed = 5f;            // твой игрок
+    public float sprintSpeed = 7.4f;       // твой игрок со спринтом (RT)
+    public float keeperSpeed = 3.6f;
     [Header("Движение: быстрый отклик, лёгкая инерция только на полном спринте")]
-    public float accel = 42f;              // ускорение, м/с² (до бега ~0.15 с, до спринта ~0.3 с)
+    public float accel = 32f;              // ускорение, м/с² (до бега ~0.2 с, до спринта ~0.35 с)
     public float braking = 55f;            // торможение, м/с²
     public float turnRateSlow = 2000f;     // скорость поворота на бегу, °/с (почти мгновенно)
     public float turnRateFast = 800f;      // на полном спринте, °/с — чуть шире дуга, но без «слоу-мо»
@@ -68,7 +68,7 @@ public class Player : MonoBehaviour
     float tackleTimer, tackleCooldown, slideTimer, recoverTimer;
     bool tackleResolved;
     float diveTimer, diveCooldown, skillTimer, headerBuffer, openTimer;
-    float shotSeenAt = -1f, afterPassRunUntil;
+    float shotSeenAt = -1f, afterPassRunUntil, slideCooldown;
     Vector3 slideDir, diveDir, skillVel, openTarget;
     float passBuffer, shotBuffer, bufferedCharge;
     PassKind bufferedPass;
@@ -221,7 +221,7 @@ public class Player : MonoBehaviour
         float dt = Time.deltaTime;
         kickCooldown -= dt; lostTimer -= dt; thinkTimer -= dt; openTimer -= dt;
         passBuffer -= dt; shotBuffer -= dt; headerBuffer -= dt;
-        tackleTimer -= dt; tackleCooldown -= dt; recoverTimer -= dt; diveCooldown -= dt;
+        tackleTimer -= dt; tackleCooldown -= dt; recoverTimer -= dt; diveCooldown -= dt; slideCooldown -= dt;
         holdTimer = HasBall ? holdTimer + dt : 0f;
 
         // Выносливость: спринт тратит, шаг восстанавливает
@@ -340,10 +340,15 @@ public class Player : MonoBehaviour
         if (dir.sqrMagnitude > 0.01f) aim = dir.normalized;
         if (slow && defending && (BallPos - Position).sqrMagnitude > 0.01f) aim = (BallPos - Position).normalized;
 
+        // X — подкат не только когда мяч у соперника, но и когда он ничей (после отскока, паса соперника, плохого приёма).
+        // Исключение: мяч летит тебе от партнёра — тогда X это навес с первого касания.
+        bool looseNotMine = owner == null && !Ball.Held && !receiving && !taker;
+        if (looseNotMine && GameInput.Down(Btn.Lob)) { SlideTackle(dir.sqrMagnitude > 0.01f ? dir : (BallPos - Position)); return; }
+
         if (defending && !taker)
         {
             // ---------------- ОБОРОНА (смена игрока — LB / правый стик — в MatchManager, работает всегда)
-            if (GameInput.Down(Btn.Lob)) SlideTackle(aim);                 // X / Квадрат — подкат
+            if (GameInput.Down(Btn.Lob)) SlideTackle(dir.sqrMagnitude > 0.01f ? dir : (BallPos - Position));   // X / Квадрат — подкат (по стику, иначе к мячу)
             if (GameInput.Down(Btn.Shoot)) StandingTackle();               // B / Круг — отбор, толчок корпусом
             if (GameInput.Held(Btn.Through)) mm.RequestKeeperRush();       // Y / Треугольник — выход вратаря
             if (GameInput.Held(Btn.Modifier)) mm.RequestTeammatePress();   // RB / R1 — прессинг партнёра
@@ -787,10 +792,11 @@ public class Player : MonoBehaviour
 
     void SlideTackle(Vector3 dir)
     {
-        if (tackleCooldown > 0f || dir.sqrMagnitude < 0.01f) return;
+        if (slideCooldown > 0f || slideTimer > 0f) return;
+        if (Flat(dir).sqrMagnitude < 0.01f) dir = Facing;
         slideDir = Flat(dir).normalized;
         slideTimer = slideTime;
-        tackleCooldown = tackleCooldownTime + slideRecover;
+        slideCooldown = slideTime + slideRecover + 0.15f;   // своя перезарядка: сразу после вставания можно снова
     }
 
     /// <summary>Подкат: едем по инерции. Сначала мяч — чисто выбили; сначала соперник (обычно сзади) — фол.</summary>
