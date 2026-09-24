@@ -76,15 +76,15 @@ public class MatchManager : MonoBehaviour
     Player taker, pressHelper;
 
     Collider goalLeft, goalRight;                    // триггеры ворот твоей команды (-X) и соперника (+X)
-    readonly Player[] chaser = new Player[2];
+    Player[] chaser = new Player[2];
     Transform marker, aimArrow, passRing, passLine, nextSwitch;   // индикаторы: ты, прицел, пас, следующий по LB
 
     Player runner, celebrant;                        // кто забегает по LB; кто забил (камера на него)
     float runUntil, autoSwitchAt, markTimer, flashTimer, shakeTime, shakeAmp;
     string flashText;
     Vector3 camVel;
-    readonly Dictionary<Player, Player> marks = new Dictionary<Player, Player>();   // защитник → опекаемый
-    readonly Dictionary<Player, Vector3> wallSpots = new Dictionary<Player, Vector3>();
+    Dictionary<Player, Player> marks = new Dictionary<Player, Player>();   // защитник → опекаемый
+    Dictionary<Player, Vector3> wallSpots = new Dictionary<Player, Vector3>();
 
     public bool Stopped => app == AppState.Menu || paused || phase == Phase.Stopped || phase == Phase.Over;
     public bool SetPieceActive => phase == Phase.SetPiece;
@@ -213,8 +213,18 @@ public class MatchManager : MonoBehaviour
 
     // ------------------------------------------------------------ цикл
 
+    /// <summary>После перекомпиляции во время Play несериализуемые поля могут обнулиться — восстанавливаем.</summary>
+    void EnsureState()
+    {
+        if (chaser == null) chaser = new Player[2];
+        if (marks == null) marks = new Dictionary<Player, Player>();
+        if (wallSpots == null) wallSpots = new Dictionary<Player, Vector3>();
+        if (players == null) players = new List<Player>();
+    }
+
     void Update()
     {
+        EnsureState();
         // Start / Esc — пауза. «Назад» (B) на паузе обрабатывает меню.
         if (InMatch && phase != Phase.Over && GameInput.Down(Btn.Pause))
         {
@@ -254,6 +264,7 @@ public class MatchManager : MonoBehaviour
 
     void LateUpdate()
     {
+        EnsureState();
         UpdateCamera();
         UpdateIndicators();
     }
@@ -957,14 +968,18 @@ public class MatchManager : MonoBehaviour
         return p;
     }
 
+    /// <summary>
+    /// Создаёт недостающие индикаторы. Вызывается и из UpdateIndicators: если Unity перекомпилировала скрипты
+    /// прямо во время Play, Start() не повторяется, а новые поля остаются пустыми.
+    /// </summary>
     void CreateIndicators()
     {
         Color accent = new Color(1f, 0.55f, 0.1f);
-        marker = Prim(PrimitiveType.Sphere, null, Vector3.zero, Vector3.one * 0.4f, Color.yellow).transform;
-        aimArrow = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.12f, 0.02f, 1.2f), accent).transform;
-        passRing = Prim(PrimitiveType.Cylinder, null, Vector3.zero, new Vector3(1.3f, 0.01f, 1.3f), accent).transform;
-        passLine = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.08f, 0.01f, 1f), accent).transform;
-        nextSwitch = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.25f, 0.25f, 0.25f), new Color(0.3f, 0.85f, 1f)).transform;
+        if (marker == null) marker = Prim(PrimitiveType.Sphere, null, Vector3.zero, Vector3.one * 0.4f, Color.yellow).transform;
+        if (aimArrow == null) aimArrow = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.12f, 0.02f, 1.2f), accent).transform;
+        if (passRing == null) passRing = Prim(PrimitiveType.Cylinder, null, Vector3.zero, new Vector3(1.3f, 0.01f, 1.3f), accent).transform;
+        if (passLine == null) passLine = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.08f, 0.01f, 1f), accent).transform;
+        if (nextSwitch == null) nextSwitch = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.25f, 0.25f, 0.25f), new Color(0.3f, 0.85f, 1f)).transform;
     }
 
     /// <summary>Кого выберет LB: ближайший к мячу партнёр (кроме текущего).</summary>
@@ -984,6 +999,7 @@ public class MatchManager : MonoBehaviour
     /// <summary>Жёлтый шар над тобой, стрелка прицела и оранжевая линия/кольцо к тому, кому уйдёт пас.</summary>
     void UpdateIndicators()
     {
+        if (marker == null || aimArrow == null || passRing == null || passLine == null || nextSwitch == null) CreateIndicators();
         bool show = InMatch && controlled != null && phase != Phase.Over;
         marker.gameObject.SetActive(show);
         aimArrow.gameObject.SetActive(show);
