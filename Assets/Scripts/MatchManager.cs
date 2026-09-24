@@ -994,15 +994,63 @@ public class MatchManager : MonoBehaviour
         float lum = (kit.r + kit.g + kit.b) / 3f;
         Color c = role == Role.Keeper ? (lum < 0.3f ? Color.Lerp(kit, Color.white, 0.45f) : Color.Lerp(kit, Color.black, 0.45f)) : kit;
         Paint(go, c);
-        // «Нос» показывает, куда смотрит игрок
-        Prim(PrimitiveType.Cube, go.transform, new Vector3(0f, 0.5f, 0.45f), new Vector3(0.25f, 0.15f, 0.3f),
-             lum > 0.7f ? new Color(0.15f, 0.15f, 0.15f) : Color.white);
+
+        // 3D-модель человека (если настроена — см. Assets/Editor/PlayerModelSetup.cs), иначе капсула с «носом»
+        Transform model = null;
+        GameObject prefab = PlayerModelPrefab;
+        if (prefab != null)
+        {
+            var m = Instantiate(prefab, go.transform);
+            m.transform.localPosition = new Vector3(0f, -1f, 0f);     // ноги модели — на газоне (центр капсулы на высоте 1 м)
+            m.transform.localRotation = Quaternion.identity;
+            go.GetComponent<Renderer>().enabled = false;
+            TintKit(m, c, lum);
+            model = m.transform;
+        }
+        else
+        {
+            // «Нос» показывает, куда смотрит игрок
+            Prim(PrimitiveType.Cube, go.transform, new Vector3(0f, 0.5f, 0.45f), new Vector3(0.25f, 0.15f, 0.3f),
+                 lum > 0.7f ? new Color(0.15f, 0.15f, 0.15f) : Color.white);
+        }
 
         var p = go.AddComponent<Player>();
         p.Init(this, team, role, home, name);
+        if (model != null) p.AttachModel(model);
         // Мяч не сталкивается с капсулами физически — касания считает Ball (контроль, блоки)
         Physics.IgnoreCollision(ball.Col, go.GetComponent<Collider>());
         return p;
+    }
+
+    static GameObject playerModelPrefab;
+    static bool playerModelLoaded;
+    static GameObject PlayerModelPrefab
+    {
+        get
+        {
+            if (!playerModelLoaded) { playerModelPrefab = Resources.Load<GameObject>("Models/PlayerModel"); playerModelLoaded = true; }
+            return playerModelPrefab;
+        }
+    }
+
+    /// <summary>
+    /// Форма в цвет команды: футболка и гетры — цвет формы, шорты — тёмные (или светлые для тёмной формы).
+    /// Текстуру у этих частей убираем, чтобы цвет был чистым. Части ищем по имени меша (у Mixamo: *_Shirt, *_Shorts, *_Socks).
+    /// </summary>
+    static void TintKit(GameObject model, Color kit, float lum)
+    {
+        Color shorts = lum < 0.3f ? new Color(0.9f, 0.9f, 0.9f) : new Color(0.12f, 0.12f, 0.14f);
+        foreach (var r in model.GetComponentsInChildren<Renderer>())
+        {
+            string n = r.name.ToLowerInvariant();
+            Color? col = n.Contains("shirt") || n.Contains("sock") ? kit : n.Contains("short") ? shorts : (Color?)null;
+            if (col == null) continue;
+            foreach (var mat in r.materials)
+            {
+                mat.mainTexture = null;
+                mat.color = col.Value;
+            }
+        }
     }
 
     /// <summary>

@@ -52,6 +52,9 @@ public class Player : MonoBehaviour
 
     MatchManager mm;
     Rigidbody rb;
+    Transform model;                     // 3D-модель (если есть): анимируется по скорости
+    Animator anim;
+    static readonly int SpeedHash = Animator.StringToHash("Speed");
     Vector3 desiredVel;
     Vector3 aim;
     float kickCooldown, lostTimer, thinkTimer, holdTimer;
@@ -158,6 +161,40 @@ public class Player : MonoBehaviour
         desiredVel = Vector3.zero; aim = facing;
         charge = 0f; kickCooldown = 0f; lostTimer = 0f; passBuffer = 0f; shotBuffer = 0f; shotArmed = false;
         tackleTimer = 0f; slideTimer = 0f; recoverTimer = 0f; diveTimer = 0f; skillTimer = 0f; headerBuffer = 0f;
+    }
+
+    /// <summary>Подключить 3D-модель: капсула остаётся физикой, модель только показывает и анимирует.</summary>
+    public void AttachModel(Transform m)
+    {
+        model = m;
+        anim = m.GetComponentInChildren<Animator>();
+    }
+
+    /// <summary>
+    /// Анимация: смесь «покой → бег» по скорости; на спринте анимация ускоряется.
+    /// На подкате модель ложится на спину ногами вперёд, в прыжке вратаря — на бок.
+    /// </summary>
+    void LateUpdate()
+    {
+        if (model == null) return;
+        float speed = Velocity.magnitude;
+        if (anim != null)
+        {
+            anim.SetFloat(SpeedHash, speed);
+            anim.speed = speed > 6f ? Mathf.Min(speed / 6f, 1.6f) : 1f;
+        }
+        Quaternion rot = Quaternion.identity;
+        Vector3 pos = new Vector3(0f, -1f, 0f);
+        if (Sliding) rot = Quaternion.Euler(-70f, 0f, 0f);             // ноги вперёд, корпус назад (опора — стопы)
+        else if (Diving)
+        {
+            float side = Vector3.Dot(diveDir, transform.right) >= 0f ? -1f : 1f;   // падаем в сторону прыжка
+            rot = Quaternion.Euler(0f, 0f, 75f * side);
+            pos.y = -0.8f;                                                  // немного над газоном — в полёте
+        }
+        float k = 1f - Mathf.Exp(-18f * Time.deltaTime);
+        model.localRotation = Quaternion.Slerp(model.localRotation, rot, k);
+        model.localPosition = Vector3.Lerp(model.localPosition, pos, k);
     }
 
     public void OnLostBall() => lostTimer = 0.4f;     // после отбора нельзя мгновенно вернуть мяч

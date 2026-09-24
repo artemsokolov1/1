@@ -37,6 +37,8 @@ Unity сама берёт подходящую для твоего редакт�
 | `Assets/Editor/MiniFootballSetup.cs` | при первом открытии создаёт и открывает сцену `Main.unity`, добавляет её в Build Settings |
 | `Assets/Editor/Setup/InputSystemInstaller.cs` | ставит пакет Input System подходящей версии, если его нет |
 | `Assets/Resources/Fonts/` | шрифты интерфейса с кириллицей: Russo One и PT Sans Narrow (SIL Open Font License, тексты лицензий рядом) |
+| `Assets/Editor/PlayerModelSetup.cs` | подключает 3D-модель игрока из `Assets/Models/Player` (Humanoid, аниматор покой→бег, префаб) |
+| `Assets/Models/Player/` | модель и анимации Mixamo: `Character.fbx`, `Idle.fbx`, `Running.fbx` |
 | `*.asmdef` | сборки: игра подключает Input System, только если пакет установлен, — поэтому без него нет ошибок компиляции |
 
 ## Сборка сцены вручную (если захочется)
@@ -48,6 +50,22 @@ Unity сама берёт подходящую для твоего редакт�
 
 > Для Unity 2022 и старше нужны замены: `linearVelocity` → `velocity`, `linearDamping` → `drag`, `angularDamping` → `angularDrag`,
 > `PhysicsMaterial` → `PhysicMaterial`, `PhysicsMaterialCombine` → `PhysicMaterialCombine`, `FindAnyObjectByType` → `FindObjectOfType`.
+
+## 3D-модель игрока
+
+Вместо капсул в игре показывается модель человека из `Assets/Models/Player` (Mixamo). Капсула остаётся физикой, модель только
+отображается и анимируется.
+
+- При первом открытии проекта скрипт `PlayerModelSetup` делает всё сам:
+  - переводит модели в Humanoid;
+  - берёт из файлов анимаций дубль `mixamo.com` и зацикливает его;
+  - собирает аниматор (покой → бег по скорости игрока) и префаб `Assets/Resources/Models/PlayerModel.prefab` ростом ~1,85 м.
+- Пересобрать вручную: меню **Mini Football → Настроить модель игрока** (например, после замены или добавления анимаций).
+- Футболка и гетры красятся в цвет формы, шорты — тёмные. Вратарь — в затемнённой форме.
+- На спринте анимация бега ускоряется. На подкате модель ложится ногами вперёд, в прыжке вратаря — на бок.
+- Имена файлов: персонаж — любой `.fbx` без слов idle/run/sprint в названии; анимации — со словами `idle`, `run`, `sprint` (спринт — по желанию).
+- Если модели нет, игра работает на капсулах, как раньше.
+- Если модель белая, без текстур: выдели `Character.fbx` → вкладка **Materials** → **Extract Textures…** в эту же папку.
 
 ## Меню
 
