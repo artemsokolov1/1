@@ -16,8 +16,10 @@
 5. Если Unity спросит про **Input System** («enable the new input backends?») — нажать **Yes**. Редактор перезапустится.
 6. Нажать **Play**, кликнуть мышкой в окно Game. Откроется главное меню.
 
-Если в Console ошибка про пакет `com.unity.inputsystem` (например, версия не найдена): **Window → Package Manager →
-Unity Registry → Input System → Install** (или Update), затем Yes на вопрос о перезапуске.
+Пакет Input System (для геймпада) ставится автоматически при первом открытии: версия в манифесте не зашита,
+Unity сама берёт подходящую для твоего редактора (скрипт `Assets/Editor/Setup/InputSystemInstaller.cs`).
+Пока пакета нет, игра компилируется и работает с клавиатуры. Если автоустановка не сработала:
+**Window → Package Manager → Unity Registry → Input System → Install**.
 
 Если сцена не открылась сама, открой `Assets/Scenes/Main.unity` или выбери в меню **Mini Football → Пересоздать сцену**.
 Даже в пустой сцене по Play игра соберётся сама: `MatchManager` создаёт всё нужное при старте.
@@ -33,6 +35,8 @@ Unity Registry → Input System → Install** (или Update), затем Yes н
 | `Assets/Scripts/GameInput.cs` | ввод: геймпад (раскладка FIFA) и клавиатура |
 | `Assets/Scripts/Profile.cs` | сохранения (монеты, жетоны, статистика, покупки, прокачка, настройки, испытания) и справочники |
 | `Assets/Editor/MiniFootballSetup.cs` | при первом открытии создаёт и открывает сцену `Main.unity`, добавляет её в Build Settings |
+| `Assets/Editor/Setup/InputSystemInstaller.cs` | ставит пакет Input System подходящей версии, если его нет |
+| `*.asmdef` | сборки: игра подключает Input System, только если пакет установлен, — поэтому без него нет ошибок компиляции |
 
 ## Сборка сцены вручную (если захочется)
 

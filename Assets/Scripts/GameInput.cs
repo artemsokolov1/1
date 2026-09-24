@@ -1,5 +1,5 @@
 using UnityEngine;
-#if ENABLE_INPUT_SYSTEM
+#if MF_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Controls;
 #endif
@@ -34,7 +34,7 @@ public static class GameInput
     /// <summary>Последнее устройство — геймпад? (для подсказок в HUD)</summary>
     public static bool UsingGamepad { get; private set; }
 
-#if ENABLE_INPUT_SYSTEM
+#if MF_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
     static Keyboard K => Keyboard.current;
     static Gamepad G => Gamepad.current;
 
