@@ -4,20 +4,23 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Controls;
 #endif
 
-/// <summary>Игровые действия. Раскладка геймпада — как в FIFA (Xbox / PlayStation).</summary>
+/// <summary>
+/// Игровые действия. Раскладка геймпада — как в FIFA 20 (руководство EA): в атаке и в обороне одни и те же кнопки
+/// делают разное. Клавиатура: J/K/L/I — A/B/X/Y, E — RB, Q — LB, Shift — RT, Space — LT, T/F/G/H — правый стик.
+/// </summary>
 public enum Btn
 {
-    Pass,       // A / Крест        — J      | в защите (удерживать): опека соперника с мячом
-    Shoot,      // B / Круг         — K      | в защите: отбор
-    Lob,        // X / Квадрат      — L      | в защите: подкат
-    Through,    // Y / Треугольник  — I      | в защите (удерживать): вратарь выходит
-    Sprint,     // RT / R2          — Shift
-    Switch,     // LB / L1          — Q      | смена игрока
-    TeamPress,  // RB / R1          — E      | партнёр прессингует
-    Jockey,     // LT / L2          — Space  | медленный бег лицом к мячу / укрывание мяча
+    Pass,       // A / Крест        — атака: пас низом (RB+A — прострел)       | оборона: сдерживание (держать)
+    Shoot,      // B / Круг         — атака: удар / головой (RB+B — закрученный) | оборона: подкат
+    Lob,        // X / Квадрат      — атака: навес / длинный пас / перевод      | оборона: отбор / толчок корпусом
+    Through,    // Y / Треугольник  — атака: пас на ход (RB+Y — навесом)        | оборона: выход вратаря (держать)
+    Sprint,     // RT / R2          — ускорение
+    Switch,     // LB / L1          — атака с мячом: забегание партнёра; без мяча — смена игрока
+    Modifier,   // RB / R1          — атака: укрывание мяча / модификатор точного удара и паса | оборона: прессинг партнёра
+    Jockey,     // LT / L2          — атака: медленное ведение, укрывание | оборона: выжидание лицом к атаке
     Pause,      // Start / Options  — Esc
-    Confirm,    // A / Крест        — Enter  | меню
-    Back,       // B / Круг         — Esc/Backspace | меню
+    Confirm,    // A / Крест        — Enter (меню)
+    Back,       // B / Круг         — Esc / Backspace (меню)
 }
 
 /// <summary>
@@ -50,7 +53,7 @@ public static class GameInput
             case Btn.Through: return k.iKey;
             case Btn.Sprint: return k.leftShiftKey;
             case Btn.Switch: return k.qKey;
-            case Btn.TeamPress: return k.eKey;
+            case Btn.Modifier: return k.eKey;
             case Btn.Jockey: return k.spaceKey;
             case Btn.Pause: return k.escapeKey;
             case Btn.Confirm: return k.enterKey;
@@ -80,7 +83,7 @@ public static class GameInput
             case Btn.Through: return g.buttonNorth;
             case Btn.Sprint: return g.rightTrigger;
             case Btn.Switch: return g.leftShoulder;
-            case Btn.TeamPress: return g.rightShoulder;
+            case Btn.Modifier: return g.rightShoulder;
             case Btn.Jockey: return g.leftTrigger;
             case Btn.Pause: return g.startButton;
             case Btn.Confirm: return g.buttonSouth;
@@ -123,7 +126,19 @@ public static class GameInput
         return Vector2.ClampMagnitude(v, 1f);
     }
 
-    public static Vector2 RightStick() => G != null ? G.rightStick.ReadValue() : Vector2.zero;
+    /// <summary>Правый стик геймпада или T/F/G/H на клавиатуре (финты, смена игрока по направлению).</summary>
+    public static Vector2 RightStick()
+    {
+        Vector2 v = G != null ? G.rightStick.ReadValue() : Vector2.zero;
+        var k = K;
+        if (k != null)
+        {
+            Vector2 kv = new Vector2((k.hKey.isPressed ? 1f : 0f) - (k.fKey.isPressed ? 1f : 0f),
+                                     (k.tKey.isPressed ? 1f : 0f) - (k.gKey.isPressed ? 1f : 0f));
+            if (kv.sqrMagnitude > 0f) v = kv;
+        }
+        return v;
+    }
 
     static int RawNavVertical()
     {
@@ -154,7 +169,7 @@ public static class GameInput
             case Btn.Through: return KeyCode.I;
             case Btn.Sprint: return KeyCode.LeftShift;
             case Btn.Switch: return KeyCode.Q;
-            case Btn.TeamPress: return KeyCode.E;
+            case Btn.Modifier: return KeyCode.E;
             case Btn.Jockey: return KeyCode.Space;
             case Btn.Pause: return KeyCode.Escape;
             case Btn.Confirm: return KeyCode.Return;
@@ -173,7 +188,7 @@ public static class GameInput
             case Btn.Lob: return KeyCode.JoystickButton2;
             case Btn.Through: return KeyCode.JoystickButton3;
             case Btn.Switch: return KeyCode.JoystickButton4;
-            case Btn.TeamPress: return KeyCode.JoystickButton5;
+            case Btn.Modifier: return KeyCode.JoystickButton5;
             case Btn.Pause: return KeyCode.JoystickButton7;
         }
         return KeyCode.None;
@@ -190,7 +205,8 @@ public static class GameInput
     public static bool Held(Btn b) => Input.GetKey(KeyOf(b)) || (PadOf(b) != KeyCode.None && Input.GetKey(PadOf(b)));
     public static bool Up(Btn b) => Input.GetKeyUp(KeyOf(b)) || (PadOf(b) != KeyCode.None && Input.GetKeyUp(PadOf(b)));
     public static Vector2 Move() => Vector2.ClampMagnitude(new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")), 1f);
-    public static Vector2 RightStick() => Vector2.zero;
+    public static Vector2 RightStick() => new Vector2((Input.GetKey(KeyCode.H) ? 1f : 0f) - (Input.GetKey(KeyCode.F) ? 1f : 0f),
+                                                     (Input.GetKey(KeyCode.T) ? 1f : 0f) - (Input.GetKey(KeyCode.G) ? 1f : 0f));
 
     static int RawNavVertical()
     {

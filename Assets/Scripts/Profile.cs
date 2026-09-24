@@ -32,7 +32,8 @@ public class Profile
     // настройки
     public int matchLength = 0;                           // индекс в Catalog.MatchLengths
     public int difficulty = 1;                            // 0 — легко, 1 — нормально, 2 — сложно
-    public int cameraMode = 0;                            // 0 — сбоку, 1 — изометрия
+    public int cameraMode = 0;                            // 0 — умная трансляция, 1 — широкая, 2 — изометрия
+    public int autoSwitch = 0;                            // 0 — авто, 1 — мячи в воздухе и ничьи, 2 — вручную
     public bool showHints = true;
 
     // испытания и тренировки
@@ -82,7 +83,8 @@ public class Profile
         if (!ownedBalls.Contains(ballSkin)) ballSkin = 0;
         matchLength = Mathf.Clamp(matchLength, 0, Catalog.MatchLengths.Length - 1);
         difficulty = Mathf.Clamp(difficulty, 0, 2);
-        cameraMode = Mathf.Clamp(cameraMode, 0, 1);
+        cameraMode = Mathf.Clamp(cameraMode, 0, Catalog.CameraModes.Length - 1);
+        autoSwitch = Mathf.Clamp(autoSwitch, 0, Catalog.AutoSwitchModes.Length - 1);
     }
 
     public int ChallengesReady()
@@ -159,7 +161,8 @@ public static class Catalog
     public static readonly int[] MatchLengths = { 60, 120, 180, 300 };
     public static readonly string[] Difficulties = { "Легко", "Нормально", "Сложно" };
     public static readonly float[] DifficultySpeed = { 0.85f, 1f, 1.12f };
-    public static readonly string[] CameraModes = { "Сбоку (трансляция)", "Изометрия" };
+    public static readonly string[] CameraModes = { "Умная трансляция", "Широкая трансляция", "Изометрия" };
+    public static readonly string[] AutoSwitchModes = { "Авто", "Мячи в воздухе и ничьи", "Вручную" };
 
     public const int MaxUpgrade = 5;
     public static int UpgradePrice(int lvl) => 400 + lvl * 350;

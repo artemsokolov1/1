@@ -728,6 +728,8 @@ public class MainMenu : MonoBehaviour
         { p.difficulty = (p.difficulty + 1) % 3; p.Save(); MM.RefreshLook(); }
         if (PanelButton(Row(ref y), $"КАМЕРА:  {Catalog.CameraModes[p.cameraMode].ToUpper()}"))
         { p.cameraMode = (p.cameraMode + 1) % Catalog.CameraModes.Length; p.Save(); }
+        if (PanelButton(Row(ref y), $"АВТОСМЕНА ИГРОКА:  {Catalog.AutoSwitchModes[p.autoSwitch].ToUpper()}"))
+        { p.autoSwitch = (p.autoSwitch + 1) % Catalog.AutoSwitchModes.Length; p.Save(); }
         if (PanelButton(Row(ref y), $"ПОДСКАЗКИ УПРАВЛЕНИЯ:  {(p.showHints ? "ВКЛ" : "ВЫКЛ")}"))
         { p.showHints = !p.showHints; p.Save(); }
         if (PanelButton(Row(ref y), $"ПОЛНЫЙ ЭКРАН:  {(Screen.fullScreen ? "ВКЛ" : "ВЫКЛ")}"))
@@ -750,20 +752,20 @@ public class MainMenu : MonoBehaviour
         Frame("УПРАВЛЕНИЕ");
         string[,] rows =
         {
-            { "ДЕЙСТВИЕ", "XBOX", "PLAYSTATION", "КЛАВИАТУРА" },
-            { "Бег", "Левый стик", "Левый стик", "WASD / стрелки" },
-            { "Спринт", "RT", "R2", "Shift" },
-            { "Пас", "A", "Крест", "J" },
-            { "Навес / заброс", "X", "Квадрат", "L" },
-            { "Пас на ход", "Y", "Треугольник", "I" },
-            { "Удар (держать — сильнее)", "B", "Круг", "K" },
-            { "Смена игрока", "LB / правый стик", "L1 / правый стик", "Q" },
-            { "Медленно, лицом к мячу", "LT", "L2", "Space" },
-            { "Защита: отбор", "B", "Круг", "K" },
-            { "Защита: подкат", "X", "Квадрат", "L" },
-            { "Защита: опека (держать)", "A", "Крест", "J" },
-            { "Прессинг партнёра (держать)", "RB", "R1", "E" },
-            { "Выход вратаря (держать)", "Y", "Треугольник", "I" },
+            { "АТАКА", "XBOX", "PLAYSTATION", "КЛАВИАТУРА" },
+            { "Бег / финты", "Левый стик / правый стик", "L3 / R3", "WASD / T F G H" },
+            { "Пас низом (с RB — прострел)", "A", "Крест", "J" },
+            { "Удар, головой (с RB — закрученный)", "B", "Круг", "K" },
+            { "Навес / длинный / перевод", "X", "Квадрат", "L" },
+            { "Пас на ход (с RB — навесом)", "Y", "Треугольник", "I" },
+            { "Укрывание корпусом / модификатор", "RB", "R1", "E" },
+            { "Забегание партнёра / смена", "LB", "L1", "Q" },
+            { "Спринт / медленное ведение", "RT / LT", "R2 / L2", "Shift / Space" },
+            { "ОБОРОНА", "", "", "" },
+            { "Сдерживание (держать)", "A", "Крест", "J" },
+            { "Подкат / отбор", "B / X", "Круг / Квадрат", "K / L" },
+            { "Выход вратаря / прессинг партнёра", "Y / RB", "Треугольник / R1", "I / E" },
+            { "Смена игрока / выжидание", "LB, правый стик / LT", "L1, R3 / L2", "Q, TFGH / Space" },
             { "Пауза", "Start", "Options", "Esc" },
         };
         float[] cols = { 60, 640, 1000, 1360 };
@@ -772,8 +774,11 @@ public class MainMenu : MonoBehaviour
             float y = 170 + r * 52;
             if (r % 2 == 1) UI.Box(new Rect(50, y, 1700, 52), new Color(1f, 1f, 1f, 0.04f));
             for (int c = 0; c < 4; c++)
-                UI.Label(new Rect(cols[c], y, 560, 52), rows[r, c], r == 0 ? UI.Head : UI.Body, r == 0 ? 30 : 26,
-                         r == 0 ? UI.Lime : Color.white, TextAnchor.MiddleLeft);
+            {
+                bool head = r == 0 || rows[r, 1] == "";
+                UI.Label(new Rect(cols[c], y, 560, 52), rows[r, c], head ? UI.Head : UI.Body, head ? 30 : 24,
+                         head ? UI.Lime : Color.white, TextAnchor.MiddleLeft);
+            }
         }
         if (BackButton())
         {

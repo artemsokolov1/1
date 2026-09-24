@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public enum SetPieceType { Kickoff, ThrowIn, Corner, GoalKick }
+public enum SetPieceType { Kickoff, ThrowIn, Corner, GoalKick, FreeKick, Penalty }
 
 /// <summary>Итог матча для экрана результата в меню.</summary>
 public class MatchResult
@@ -12,9 +12,9 @@ public class MatchResult
 }
 
 /// <summary>
-/// Ядро игры: поле, игроки, правила (гол, аут, угловой, от ворот), счёт и время, переключение игрока,
-/// камера (сбоку / изометрия / облёт в меню), пауза, награды и возврат в меню. HUD матча рисуется здесь,
-/// меню и пауза — в MainMenu.
+/// Ядро игры: поле, игроки, правила (гол, аут, угловой, от ворот, фол → штрафной/пенальти), счёт и время,
+/// смена игрока (ручная и автоматическая), опека и стенка, «умная» камера, пауза, награды и возврат в меню.
+/// HUD матча (табло, радар, выносливость) рисуется здесь, меню и пауза — в MainMenu.
 /// Ось X — вдоль поля: твоя команда защищает ворота на -X и атакует в +X.
 ///
 /// Фазы матча: Play (мяч в игре) → Stopped (пауза после гола/аута) → SetPiece (стандарт) → Play ... → Over.
@@ -39,6 +39,11 @@ public class MatchManager : MonoBehaviour
 
     [Header("Камера сбоку (трансляция)")]
     public float sidePitch = 50f, sideFov = 40f, sideDistance = 30f;
+    [Header("Умная камера")]
+    public float smartDistance = 24f;     // базовая дистанция (ближе широкой трансляции)
+    public float smartZoomOut = 0.6f;     // на сколько отъезжать за каждый метр разрыва «игрок — мяч» сверх 5 м
+    public float lookAhead = 0.3f;        // упреждение по скорости мяча, с
+    public float camDamp = 0.35f;         // сглаживание (SmoothDamp), с
     [Header("Камера изометрия")]
     public Vector3 isoAngles = new Vector3(45f, 45f, 0f);
     public float isoSize = 11f, isoDistance = 40f;
@@ -72,7 +77,14 @@ public class MatchManager : MonoBehaviour
 
     Collider goalLeft, goalRight;                    // триггеры ворот твоей команды (-X) и соперника (+X)
     readonly Player[] chaser = new Player[2];
-    Transform marker, aimArrow, passRing, passLine;  // индикаторы твоего игрока и паса
+    Transform marker, aimArrow, passRing, passLine, nextSwitch;   // индикаторы: ты, прицел, пас, следующий по LB
+
+    Player runner, celebrant;                        // кто забегает по LB; кто забил (камера на него)
+    float runUntil, autoSwitchAt, markTimer, flashTimer, shakeTime, shakeAmp;
+    string flashText;
+    Vector3 camVel;
+    readonly Dictionary<Player, Player> marks = new Dictionary<Player, Player>();   // защитник → опекаемый
+    readonly Dictionary<Player, Vector3> wallSpots = new Dictionary<Player, Vector3>();
 
     public bool Stopped => app == AppState.Menu || paused || phase == Phase.Stopped || phase == Phase.Over;
     public bool SetPieceActive => phase == Phase.SetPiece;
@@ -84,6 +96,8 @@ public class MatchManager : MonoBehaviour
     public bool KeeperRush => Time.time < keeperRushUntil;
     public bool IsPressHelper(Player p) => Time.time < teammatePressUntil && pressHelper == p;
     public float AiTackleChance => new[] { 0.2f, 0.35f, 0.5f }[Profile.Current.difficulty];
+    public bool IsRunner(Player p) => p == runner && Time.time < runUntil;
+    public string FlashText => flashTimer > 0f ? flashText : null;
     float L => length * 0.5f;
     float W => width * 0.5f;
 
@@ -232,7 +246,10 @@ public class MatchManager : MonoBehaviour
         }
 
         if (passReceiver != null && (passTimer -= Time.deltaTime) <= 0f) passReceiver = null;
+        if (autoSwitchAt > 0f && Time.time >= autoSwitchAt) { autoSwitchAt = 0f; DoAutoSwitch(); }
+        flashTimer -= Time.deltaTime;
         UpdateChasers();
+        UpdateMarking();
     }
 
     void LateUpdate()
@@ -245,16 +262,30 @@ public class MatchManager : MonoBehaviour
 
     void ApplyCameraProjection()
     {
-        bool iso = InMatch && Profile.Current.cameraMode == 1;
+        bool iso = InMatch && Profile.Current.cameraMode == 2;
         cam.orthographic = iso;
         if (iso) { cam.orthographicSize = isoSize; cam.transform.rotation = Quaternion.Euler(isoAngles); }
         else cam.fieldOfView = InMenu ? 35f : sideFov;
     }
 
+    public void Shake(float amp)
+    {
+        shakeAmp = Mathf.Max(shakeAmp, amp);
+        shakeTime = 0.25f;
+    }
+
+    /// <summary>
+    /// Камеры:
+    ///  0 — «умная трансляция»: держит в кадре мяч и твоего игрока (фокус между ними, ближе к мячу),
+    ///      смотрит вперёд по ходу мяча, отъезжает, когда игрок и мяч расходятся, на стандартах показывает
+    ///      точку и ворота, после гола — забившего;
+    ///  1 — широкая трансляция: только мяч, дальше;
+    ///  2 — изометрия.
+    /// </summary>
     void UpdateCamera()
     {
-        float k = 1f - Mathf.Exp(-camSmooth * Time.unscaledDeltaTime);
-        Vector3 b = ball.transform.position;
+        float dt = Time.unscaledDeltaTime;
+        float k = 1f - Mathf.Exp(-camSmooth * dt);
 
         if (InMenu)
         {
@@ -267,22 +298,62 @@ public class MatchManager : MonoBehaviour
             return;
         }
 
-        if (Profile.Current.cameraMode == 1)
+        Vector3 b = ball.transform.position;
+        b.y = 0f;
+        int mode = Profile.Current.cameraMode;
+        Vector3 focus;
+        float dist;
+        Quaternion rot;
+
+        if (mode == 2)
         {
-            // Изометрия: фиксированный угол, камера тянется за мячом
-            Vector3 focus = new Vector3(b.x, 0f, b.z);
-            cam.transform.rotation = Quaternion.Euler(isoAngles);
-            cam.transform.position = Vector3.Lerp(cam.transform.position, focus - cam.transform.forward * isoDistance, k);
+            focus = b;
+            dist = isoDistance;
+            rot = Quaternion.Euler(isoAngles);
         }
         else
         {
-            // Сбоку, как в телетрансляции: смотрим поперёк поля, по X ведём мяч, по Z смещаемся слабо
-            float fx = Mathf.Clamp(b.x, -(L - 15f), L - 15f);
-            Vector3 focus = new Vector3(fx, 0f, b.z * 0.3f);
-            Quaternion rot = Quaternion.Euler(sidePitch, 0f, 0f);
-            cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, rot, k);
-            cam.transform.position = Vector3.Lerp(cam.transform.position, focus - (rot * Vector3.forward) * sideDistance, k);
+            rot = Quaternion.Euler(sidePitch, 0f, 0f);
+            if (mode == 1) { focus = b; dist = sideDistance + 3f; }
+            else
+            {
+                Vector3 me = controlled != null ? controlled.Position : b;
+                float sep = Vector3.Distance(me, b);
+                focus = Vector3.Lerp(me, b, sep > 18f ? 0.85f : 0.65f);
+                focus += Vector3.ClampMagnitude(new Vector3(ball.Body.linearVelocity.x, 0f, ball.Body.linearVelocity.z) * lookAhead, 5f);
+                dist = smartDistance + Mathf.Clamp(sep - 5f, 0f, 14f) * smartZoomOut
+                     + Mathf.Clamp01((ball.Body.linearVelocity.magnitude - 12f) / 15f) * 3f;
+
+                if (phase == Phase.SetPiece)
+                {
+                    focus = spType == SetPieceType.Kickoff ? spSpot : Vector3.Lerp(spSpot, GoalOf(Player.Opp(spTeam)), 0.35f);
+                    dist = smartDistance + 2f;
+                }
+                else if (phase == Phase.Stopped && celebrant != null)
+                {
+                    focus = celebrant.Position;                  // гол: камера наезжает на забившего
+                    dist = 16f;
+                }
+            }
+            focus.x = Mathf.Clamp(focus.x, -(L - 12f), L - 12f);
+            focus.z = Mathf.Clamp(focus.z, -W * 0.45f, W * 0.45f) * 0.7f;
         }
+
+        Vector3 wanted = focus - (rot * Vector3.forward) * dist;
+        Vector3 pos2 = Vector3.SmoothDamp(cam.transform.position - ShakeOffset(0f), wanted, ref camVel, camDamp, Mathf.Infinity, dt);
+        shakeTime -= dt;
+        cam.transform.position = pos2 + ShakeOffset(dt);
+        cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, rot, k);
+    }
+
+    Vector3 lastShake;
+    /// <summary>Встряска (удар в штангу, сильный удар, сейв). dt = 0 — вернуть прошлое смещение.</summary>
+    Vector3 ShakeOffset(float dt)
+    {
+        if (dt <= 0f) return lastShake;
+        lastShake = shakeTime > 0f ? Random.insideUnitSphere * shakeAmp * (shakeTime / 0.25f) : Vector3.zero;
+        if (shakeTime <= 0f) shakeAmp = 0f;
+        return lastShake;
     }
 
     /// <summary>Стик/WASD → направление на поле относительно камеры (вверх по экрану = от камеры).</summary>
@@ -336,6 +407,8 @@ public class MatchManager : MonoBehaviour
         if (c == goalLeft) { scoreBlue++; conceded = Team.Red; banner = "ГОЛ! " + Catalog.OpponentClub; }
         else if (c == goalRight) { scoreRed++; conceded = Team.Blue; banner = "ГОЛ! " + Profile.Current.clubName; }
         else return;
+        celebrant = ball.lastTouch;
+        Shake(0.2f);
 
         // Тренировка: набрал нужное число голов — сразу итог
         if (practiceIndex >= 0 && scoreRed >= Catalog.Practices[practiceIndex].goalsNeeded) { EndMatch(); return; }
@@ -354,12 +427,28 @@ public class MatchManager : MonoBehaviour
         if (title != null) banner = $"{title}: {TeamName(team)}";
     }
 
+    public static string SetPieceName(SetPieceType t)
+    {
+        switch (t)
+        {
+            case SetPieceType.Kickoff: return "Розыгрыш с центра";
+            case SetPieceType.ThrowIn: return "Аут";
+            case SetPieceType.Corner: return "Угловой";
+            case SetPieceType.GoalKick: return "От ворот";
+            case SetPieceType.FreeKick: return "Штрафной";
+            default: return "Пенальти";
+        }
+    }
+
     void BeginSetPiece(SetPieceType type, Team team, Vector3 spot)
     {
         phase = Phase.SetPiece;
         phaseTimer = 0f;
         banner = null;
         passReceiver = null;
+        celebrant = null;
+        runner = null;
+        wallSpots.Clear();
 
         if (type == SetPieceType.Kickoff)
             foreach (var p in players) p.ResetTo(p.homePos, p.team == Team.Red ? Vector3.right : Vector3.left);
@@ -379,10 +468,36 @@ public class MatchManager : MonoBehaviour
 
         // Направление «в поле» от точки стандарта
         Vector3 attack = team == Team.Red ? Vector3.right : Vector3.left;
+        Vector3 toGoal = (GoalOf(Player.Opp(team)) - spot).normalized;
         Vector3 inField = type == SetPieceType.ThrowIn ? new Vector3(0f, 0f, -Mathf.Sign(spot.z))
                         : type == SetPieceType.Corner ? (-spot).normalized
+                        : type == SetPieceType.FreeKick || type == SetPieceType.Penalty ? toGoal
                         : attack;
         taker.ResetTo(spot - inField * 0.9f, inField);
+
+        Team defending = Player.Opp(team);
+        if (type == SetPieceType.Penalty)
+        {
+            // Пенальти: вратарь — в центр ворот, остальные — за пределы штрафной
+            Player k = Keeper(defending);
+            if (k != null) k.ResetTo(GoalOf(defending) + new Vector3(-Mathf.Sign(OwnGoalX(defending)) * 0.3f, 0f, 0f), toGoal * -1f);
+            foreach (var p in players)
+                if (p != taker && p.role == Role.Field) p.ResetTo(KeepOutOfPenaltyBox(p.Position), p.Facing);
+        }
+        else if (type == SetPieceType.FreeKick && Vector3.Distance(spot, GoalOf(defending)) < 18f)
+        {
+            // Штрафной у ворот — стенка из двух ближайших защитников в 4 м от мяча на линии удара
+            Vector3 perp = Vector3.Cross(Vector3.up, toGoal);
+            int n = 0;
+            foreach (var p in SortedByDistance(defending, spot))
+            {
+                if (p.role != Role.Field || n >= 2) continue;
+                Vector3 w = spot + toGoal * 4f + perp * (n == 0 ? -0.55f : 0.55f);
+                wallSpots[p] = w;
+                p.ResetTo(w, -toGoal);
+                n++;
+            }
+        }
 
         // Соперников, стоящих слишком близко, отодвигаем на 4 м (на центре — за круг)
         foreach (var p in players)
@@ -460,20 +575,171 @@ public class MatchManager : MonoBehaviour
 
     // ------------------------------------------------------------ события от игроков и мяча
 
-    public void OnKick(Player kicker, Player receiver)
+    public void OnKick(Player kicker, Player receiver, bool lofted)
     {
-        if (phase == Phase.SetPiece) phase = Phase.Play;   // стандарт разыгран — время пошло
+        if (phase == Phase.SetPiece) { phase = Phase.Play; wallSpots.Clear(); }   // стандарт разыгран — время пошло
         passReceiver = receiver;
         passTimer = 2.5f;
         // Твоя команда отдала пас — управление сразу переходит к адресату
         if (receiver != null && receiver.team == HumanTeam && receiver.role == Role.Field) controlled = receiver;
+        // Соперник отдал пас/ударил — автосмена на того, кто лучше успевает к мячу
+        else if (kicker.team != HumanTeam) ScheduleAutoSwitch(lofted, false);
     }
 
     public void OnPossession(Player owner)
     {
         passReceiver = null;
-        // Мяч у полевого твоей команды — управляешь им
-        if (owner.team == HumanTeam && owner.role == Role.Field) controlled = owner;
+        if (owner.team == HumanTeam && owner.role == Role.Field) controlled = owner;   // мяч у своего — управляешь им
+        else if (owner.team != HumanTeam && Profile.Current.autoSwitch == 0) ScheduleAutoSwitch(false, false);
+    }
+
+    /// <summary>Мяч стал ничьим (рикошет, отбив, плохое касание, штанга).</summary>
+    public void OnLooseBall()
+    {
+        passReceiver = null;
+        ScheduleAutoSwitch(!ball.Grounded, true);
+    }
+
+    /// <summary>Короткая надпись по центру экрана (финт, сейв, штанга…).</summary>
+    public void Flash(string text)
+    {
+        flashText = text;
+        flashTimer = 1f;
+    }
+
+    /// <summary>
+    /// Автосмена (как в настройках FIFA): «Авто» — при каждом пасе/потере; «Мячи в воздухе и ничьи» — только на
+    /// навесах и отскоках; «Вручную» — никогда (кроме твоих пасов). Срабатывает с задержкой 0.12 с, когда
+    /// траектория мяча уже понятна.
+    /// </summary>
+    void ScheduleAutoSwitch(bool air, bool loose)
+    {
+        int modeSetting = Profile.Current.autoSwitch;
+        if (!InMatch || modeSetting == 2 || (modeSetting == 1 && !air && !loose)) return;
+        autoSwitchAt = Time.time + 0.12f;
+    }
+
+    void DoAutoSwitch()
+    {
+        if (controlled == null || IsTaker(controlled) || controlled.HasBall) return;
+        Player best = BestInterceptor(out float bestD);
+        float cur = DistanceToBallPath(controlled);
+        if (best != null && best != controlled && cur - bestD > 1.5f) controlled = best;
+    }
+
+    /// <summary>Кто из твоих полевых ближе всего к пути мяча (от мяча до точки, где он остановится/приземлится).</summary>
+    Player BestInterceptor(out float bestD)
+    {
+        Player best = null;
+        bestD = float.MaxValue;
+        foreach (var p in players)
+        {
+            if (p.team != HumanTeam || p.role != Role.Field) continue;
+            float d = DistanceToBallPath(p);
+            if (d < bestD) { bestD = d; best = p; }
+        }
+        return best;
+    }
+
+    float DistanceToBallPath(Player p)
+    {
+        Vector3 b = ball.transform.position; b.y = 0f;
+        Player owner = ball.Owner;
+        if (owner != null) return Vector3.Distance(p.Position, owner.Position);
+        return DistanceToSegment(p.Position, b, ball.PredictRest());
+    }
+
+    /// <summary>LB с мячом: самый продвинутый партнёр делает забегание на 2.5 с (под пас на ход).</summary>
+    public void CallRun(Player passer)
+    {
+        Vector3 attack = passer.team == Team.Red ? Vector3.right : Vector3.left;
+        Player best = null;
+        float bestX = float.MinValue;
+        foreach (var p in players)
+        {
+            if (p.team != passer.team || p.role != Role.Field || p == passer) continue;
+            float x = Vector3.Dot(p.Position, attack);
+            if (x > bestX) { bestX = x; best = p; }
+        }
+        if (best == null) return;
+        runner = best;
+        runUntil = Time.time + 2.5f;
+        Flash("ЗАБЕГАНИЕ: " + best.displayName.ToUpper());
+    }
+
+    /// <summary>Фол (подкат в соперника раньше мяча): штрафной, а в своей штрафной — пенальти.</summary>
+    public void OnFoul(Player fouler, Player victim)
+    {
+        if (phase != Phase.Play) return;
+        Team defending = fouler.team;
+        Vector3 spot = ClampToField(victim.Position, 0.5f);
+        float gx = OwnGoalX(defending);
+        bool inBox = Mathf.Abs(spot.x - gx) < boxDepth && Mathf.Abs(spot.z) < boxHalfWidth;
+        if (inBox)
+            StopForSetPiece(SetPieceType.Penalty, victim.team, new Vector3(gx - Mathf.Sign(gx) * 4.5f, 0f, 0f), 1.5f, "ПЕНАЛЬТИ");
+        else
+            StopForSetPiece(SetPieceType.FreeKick, victim.team, spot, 1.2f, "Фол! Штрафной");
+        Shake(0.1f);
+    }
+
+    public bool WallSpot(Player p, out Vector3 pos) => wallSpots.TryGetValue(p, out pos);
+
+    /// <summary>На пенальти все полевые, кроме бьющего, стоят за пределами штрафной.</summary>
+    public Vector3 KeepOutOfPenaltyBox(Vector3 v)
+    {
+        if (phase != Phase.SetPiece || spType != SetPieceType.Penalty) return v;
+        float gx = OwnGoalX(Player.Opp(spTeam));
+        if (Mathf.Abs(v.x - gx) < boxDepth + 1f && Mathf.Abs(v.z) < boxHalfWidth + 1f)
+            v.x = gx - Mathf.Sign(gx) * (boxDepth + 1.5f);
+        return v;
+    }
+
+    /// <summary>Персональная опека: для защитника — точка между опекаемым и своими воротами.</summary>
+    public bool MarkTarget(Player p, out Vector3 pos)
+    {
+        pos = Vector3.zero;
+        if (!marks.TryGetValue(p, out Player a) || a == null) return false;
+        Vector3 goal = GoalOf(p.team);
+        pos = a.Position + (goal - a.Position).normalized * 1.6f;
+        return true;
+    }
+
+    /// <summary>Раздаём опеку: самого опасного (ближе к нашим воротам) соперника — ближайшему свободному защитнику.</summary>
+    void UpdateMarking()
+    {
+        markTimer -= Time.deltaTime;
+        if (markTimer > 0f) return;
+        markTimer = 0.3f;
+        marks.Clear();
+        Player owner = ball.Owner;
+        var free = new List<Player>();
+        for (int t = 0; t < 2; t++)
+        {
+            Team team = (Team)t;
+            free.Clear();
+            foreach (var p in players)
+                if (p.team == team && p.role == Role.Field && p != chaser[t] && p != controlled) free.Add(p);
+            foreach (var a in SortedByDistance(Player.Opp(team), GoalOf(team)))
+            {
+                if (a.role != Role.Field || a == owner || free.Count == 0) continue;
+                Player best = null;
+                float bestD = float.MaxValue;
+                foreach (var d in free)
+                {
+                    float dist = Vector3.Distance(d.Position, a.Position);
+                    if (dist < bestD) { bestD = dist; best = d; }
+                }
+                marks[best] = a;
+                free.Remove(best);
+            }
+        }
+    }
+
+    List<Player> SortedByDistance(Team team, Vector3 point)
+    {
+        var list = players.FindAll(p => p.team == team);
+        list.Sort((x, y) => Vector3.Distance(x.Position, point).CompareTo(Vector3.Distance(y.Position, point)));
+        return list;
     }
 
     public void RequestKeeperRush() => keeperRushUntil = Time.time + 0.1f;
@@ -483,14 +749,7 @@ public class MatchManager : MonoBehaviour
     public void SwitchControl()
     {
         if (IsTaker(controlled)) return;
-        Player best = null;
-        float bestD = float.MaxValue;
-        foreach (var p in players)
-        {
-            if (p.team != HumanTeam || p.role != Role.Field || p == controlled) continue;
-            float d = Vector3.Distance(p.Position, ball.transform.position);
-            if (d < bestD) { bestD = d; best = p; }
-        }
+        Player best = NextSwitchTarget();
         if (best != null) controlled = best;
     }
 
@@ -548,7 +807,7 @@ public class MatchManager : MonoBehaviour
     /// свободнее линия паса (нет соперников рядом с отрезком), тем лучше. Для навеса линия не важна.
     /// Вратарь — только если больше некому.
     /// </summary>
-    public Player FindPassTarget(Player passer, Vector3 prefDir, float maxAngle, bool ignoreLane)
+    public Player FindPassTarget(Player passer, Vector3 prefDir, float maxAngle, bool ignoreLane, float maxDist = 28f)
     {
         Vector3 from = passer.Position;
         prefDir.y = 0f;
@@ -559,7 +818,7 @@ public class MatchManager : MonoBehaviour
             if (mate == passer || mate.team != passer.team) continue;
             Vector3 to = mate.Position - from;
             float d = to.magnitude;
-            if (d < 2.5f || d > 28f) continue;
+            if (d < 2.5f || d > maxDist) continue;
             float angle = Vector3.Angle(prefDir, to);
             if (angle > maxAngle) continue;
 
@@ -577,7 +836,7 @@ public class MatchManager : MonoBehaviour
         return best;
     }
 
-    static float DistanceToSegment(Vector3 p, Vector3 a, Vector3 b)
+    public static float DistanceToSegment(Vector3 p, Vector3 a, Vector3 b)
     {
         Vector3 ab = b - a;
         float t = Mathf.Clamp01(Vector3.Dot(p - a, ab) / Mathf.Max(ab.sqrMagnitude, 0.0001f));
@@ -660,7 +919,6 @@ public class MatchManager : MonoBehaviour
         Color kit = Catalog.Kits[prof.kit].color;
         Color oppKit = Mathf.Abs(kit.b - Catalog.OpponentBlue.b) + Mathf.Abs(kit.r - Catalog.OpponentBlue.r) < 0.4f
             ? Catalog.OpponentAlt : Catalog.OpponentBlue;
-        float diff = Catalog.DifficultySpeed[prof.difficulty];
 
         for (int i = 0; i < layout.Length; i++)
         {
@@ -673,7 +931,7 @@ public class MatchManager : MonoBehaviour
             Vector3 home = layout[i];
             home.x = -home.x;
             var p = CreatePlayer(Team.Blue, i == 0 ? Role.Keeper : Role.Field, home, Catalog.OpponentNames[i], oppKit);
-            p.ApplyDifficulty(diff);
+            p.ApplyDifficulty(prof.difficulty);
             players.Add(p);
         }
         controlled = players[4];
@@ -706,6 +964,21 @@ public class MatchManager : MonoBehaviour
         aimArrow = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.12f, 0.02f, 1.2f), accent).transform;
         passRing = Prim(PrimitiveType.Cylinder, null, Vector3.zero, new Vector3(1.3f, 0.01f, 1.3f), accent).transform;
         passLine = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.08f, 0.01f, 1f), accent).transform;
+        nextSwitch = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.25f, 0.25f, 0.25f), new Color(0.3f, 0.85f, 1f)).transform;
+    }
+
+    /// <summary>Кого выберет LB: ближайший к мячу партнёр (кроме текущего).</summary>
+    Player NextSwitchTarget()
+    {
+        Player best = null;
+        float bestD = float.MaxValue;
+        foreach (var p in players)
+        {
+            if (p.team != HumanTeam || p.role != Role.Field || p == controlled) continue;
+            float d = Vector3.Distance(p.Position, ball.transform.position);
+            if (d < bestD) { bestD = d; best = p; }
+        }
+        return best;
     }
 
     /// <summary>Жёлтый шар над тобой, стрелка прицела и оранжевая линия/кольцо к тому, кому уйдёт пас.</summary>
@@ -714,6 +987,15 @@ public class MatchManager : MonoBehaviour
         bool show = InMatch && controlled != null && phase != Phase.Over;
         marker.gameObject.SetActive(show);
         aimArrow.gameObject.SetActive(show);
+        // Голубой ромб — над тем, на кого переключит LB (как индикатор следующего игрока в FIFA)
+        Player next = show && ball.Owner != null && ball.Owner.team != HumanTeam ? NextSwitchTarget() : null;
+        nextSwitch.gameObject.SetActive(next != null);
+        if (next != null)
+        {
+            nextSwitch.position = next.Position + Vector3.up * 2.4f;
+            nextSwitch.rotation = Quaternion.Euler(45f, Time.time * 180f, 45f);
+        }
+
         Player target = null;
         if (show)
         {
@@ -798,10 +1080,10 @@ public class MatchManager : MonoBehaviour
         float gw = goalWidth * 0.5f, gh = goalHeight, gd = goalDepth;
         Color net = new Color(0.8f, 0.8f, 0.8f);
 
-        // Штанги и перекладина — с коллайдерами, мяч от них отскакивает
-        Prim(PrimitiveType.Cube, root, new Vector3(s * L, gh * 0.5f,  gw), new Vector3(0.2f, gh, 0.2f), Color.white, true);
-        Prim(PrimitiveType.Cube, root, new Vector3(s * L, gh * 0.5f, -gw), new Vector3(0.2f, gh, 0.2f), Color.white, true);
-        Prim(PrimitiveType.Cube, root, new Vector3(s * L, gh, 0f), new Vector3(0.2f, 0.2f, goalWidth + 0.2f), Color.white, true);
+        // Штанги и перекладина — с коллайдерами, мяч от них отскакивает (имя «Post» — для встряски камеры)
+        Prim(PrimitiveType.Cube, root, new Vector3(s * L, gh * 0.5f,  gw), new Vector3(0.2f, gh, 0.2f), Color.white, true).name = "Post";
+        Prim(PrimitiveType.Cube, root, new Vector3(s * L, gh * 0.5f, -gw), new Vector3(0.2f, gh, 0.2f), Color.white, true).name = "Post";
+        Prim(PrimitiveType.Cube, root, new Vector3(s * L, gh, 0f), new Vector3(0.2f, 0.2f, goalWidth + 0.2f), Color.white, true).name = "Post";
 
         // «Сетка»: задняя и боковые стенки + невидимая крыша (чтобы не закрывала мяч от камеры)
         Prim(PrimitiveType.Cube, root, new Vector3(s * (L + gd), gh * 0.5f, 0f), new Vector3(0.1f, gh, goalWidth), net, true);
@@ -895,15 +1177,29 @@ public class MatchManager : MonoBehaviour
         if (phase == Phase.Over)
             UI.Label(new Rect(0, 1080 * 0.36f + 110, w, 40), "Возврат в меню…  (A / Enter — сразу)", UI.Body, 22, Color.white, TextAnchor.MiddleCenter);
 
-        // Карточка твоего игрока снизу слева
+        // Вспышка: финт, сейв, штанга, забегание…
+        string flash = FlashText;
+        if (!string.IsNullOrEmpty(flash) && string.IsNullOrEmpty(banner))
+            UI.Label(new Rect(0, 1080 * 0.24f, w, 70), flash, UI.Head, 48, UI.Lime, TextAnchor.MiddleCenter);
+
+        // Стандарт твоей команды — подсказка
+        if (IsTaker(controlled))
+            UI.Label(new Rect(0, 214, w, 40), SetPieceName(spType).ToUpper() + ":  " +
+                     (GameInput.UsingGamepad ? "B — удар (RB+B — закрученный)   A — пас   X — навес   Y — на ход"
+                                             : "K — удар (E+K — закрученный)   J — пас   L — навес   I — на ход"),
+                     UI.Body, 24, Color.white, TextAnchor.MiddleCenter);
+
+        // Карточка твоего игрока снизу слева: имя, характеристики, выносливость
         if (controlled != null)
         {
             UI.Box(new Rect(40, 950, 380, 60), new Color(0.06f, 0.07f, 0.09f, 0.9f));
             UI.Box(new Rect(40, 950, 60, 60), Catalog.Kits[prof.kit].color);
             UI.Label(new Rect(115, 950, 220, 60), controlled.displayName.ToUpper(), UI.Head, 28, Color.white, TextAnchor.MiddleLeft);
-            UI.Label(new Rect(300, 950, 110, 60), IsTaker(controlled) ? "СТАНДАРТ" : "НАП", UI.Body, 20, UI.Lime, TextAnchor.MiddleRight);
-            UI.Label(new Rect(40, 1012, 600, 30),
-                $"СКО {60 + prof.speedLvl * 7}   УДР {58 + prof.shotLvl * 7}   КОН {62 + prof.controlLvl * 7}",
+            UI.Label(new Rect(300, 950, 110, 60), IsTaker(controlled) ? "СТАНДАРТ" : "", UI.Body, 20, UI.Lime, TextAnchor.MiddleRight);
+            UI.Box(new Rect(40, 1010, 380, 8), new Color(0f, 0f, 0f, 0.6f));
+            UI.Box(new Rect(40, 1010, 380 * controlled.stamina, 8), Color.Lerp(UI.Orange, UI.Lime, controlled.stamina));
+            UI.Label(new Rect(40, 1020, 600, 30),
+                $"СКО {60 + prof.speedLvl * 7}   УДР {58 + prof.shotLvl * 7}   КОН {62 + prof.controlLvl * 7}   ВЫН {Mathf.RoundToInt(controlled.stamina * 100)}",
                 UI.Body, 20, new Color(1f, 1f, 1f, 0.85f), TextAnchor.MiddleLeft);
 
             // Шкала силы удара
@@ -920,19 +1216,39 @@ public class MatchManager : MonoBehaviour
         {
             UI.Box(new Rect(w - 420, 950, 380, 60), new Color(0.06f, 0.07f, 0.09f, 0.9f));
             UI.Label(new Rect(w - 405, 950, 300, 60), owner.displayName.ToUpper(), UI.Head, 28, Color.white, TextAnchor.MiddleLeft);
-            UI.Label(new Rect(w - 160, 950, 110, 60), "С МЯЧОМ", UI.Body, 20, new Color(1f, 0.55f, 0.1f), TextAnchor.MiddleRight);
+            UI.Label(new Rect(w - 160, 950, 110, 60), "С МЯЧОМ", UI.Body, 20, UI.Orange, TextAnchor.MiddleRight);
         }
+
+        DrawRadar(new Rect(w * 0.5f - 150, 860, 300, 180));
 
         if (prof.showHints && !paused)
         {
+            bool def = owner != null && owner.team != HumanTeam;
             string hint = GameInput.UsingGamepad
-                ? (owner != null && owner.team != HumanTeam
-                    ? "B — отбор   X — подкат   A (держать) — опека   RB — прессинг партнёра   Y — выход вратаря   LB — смена"
-                    : "A — пас   X — навес   Y — пас на ход   B — удар   RT — спринт   LB / правый стик — смена   Start — пауза")
-                : (owner != null && owner.team != HumanTeam
-                    ? "K — отбор   L — подкат   J (держать) — опека   E — прессинг партнёра   I — выход вратаря   Q — смена"
-                    : "J — пас   L — навес   I — пас на ход   K — удар   Shift — спринт   Q — смена   Esc — пауза");
-            UI.Label(new Rect(0, 1040, w, 34), hint, UI.Body, 20, new Color(1f, 1f, 1f, 0.8f), TextAnchor.MiddleCenter);
+                ? (def ? "A (держать) — сдерживание   B — подкат   X — отбор   Y — вратарь   RB — прессинг   LB / R — смена   LT — выжидание"
+                       : "A — пас   B — удар   X — навес   Y — на ход   RB — укрывание / точный   LB — забегание   R — финты   RT — спринт")
+                : (def ? "J (держать) — сдерживание   K — подкат   L — отбор   I — вратарь   E — прессинг   Q / TFGH — смена   Space — выжидание"
+                       : "J — пас   K — удар   L — навес   I — на ход   E — укрывание / точный   Q — забегание   TFGH — финты   Shift — спринт");
+            UI.Label(new Rect(0, 1050, w, 30), hint, UI.Body, 18, new Color(1f, 1f, 1f, 0.8f), TextAnchor.MiddleCenter);
         }
     }
+
+    /// <summary>Радар (мини-карта) как в FIFA: поле, игроки команд, мяч; ты — с жёлтой обводкой.</summary>
+    void DrawRadar(Rect r)
+    {
+        UI.Box(r, new Color(0.05f, 0.25f, 0.1f, 0.7f));
+        UI.Box(new Rect(r.center.x - 1, r.y, 2, r.height), new Color(1f, 1f, 1f, 0.35f));
+        Color home = Catalog.Kits[Profile.Current.kit].color;
+        foreach (var p in players)
+        {
+            Vector2 pt = RadarPoint(r, p.Position);
+            if (p == controlled) UI.Box(new Rect(pt.x - 7, pt.y - 7, 14, 14), Color.yellow);
+            UI.Box(new Rect(pt.x - 5, pt.y - 5, 10, 10), p.team == HumanTeam ? home : Catalog.OpponentBlue);
+        }
+        Vector2 bp = RadarPoint(r, ball.transform.position);
+        UI.Box(new Rect(bp.x - 4, bp.y - 4, 8, 8), Color.white);
+    }
+
+    Vector2 RadarPoint(Rect r, Vector3 world) =>
+        new Vector2(r.x + (world.x / length + 0.5f) * r.width, r.y + (0.5f - world.z / width) * r.height);
 }
