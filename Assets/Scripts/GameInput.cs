@@ -38,6 +38,24 @@ public static class GameInput
     public static bool UsingGamepad { get; private set; }
 
 #if MF_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
+    /// <summary>Какой ввод работает — для строки диагностики в настройках.</summary>
+    public static string BackendInfo =>
+        "Input System — геймпад: " + (Gamepad.current != null ? Gamepad.current.displayName : "не найден");
+    public static bool FullGamepadSupport => true;
+#else
+    public static string BackendInfo
+    {
+        get
+        {
+            string[] pads = Input.GetJoystickNames();
+            string pad = pads.Length > 0 && !string.IsNullOrEmpty(pads[0]) ? pads[0] : "не найден";
+            return "Старый Input Manager (курки RT/LT и правый стик не работают) — геймпад: " + pad;
+        }
+    }
+    public static bool FullGamepadSupport => false;
+#endif
+
+#if MF_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
     static Keyboard K => Keyboard.current;
     static Gamepad G => Gamepad.current;
 

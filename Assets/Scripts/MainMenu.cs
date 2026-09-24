@@ -238,15 +238,16 @@ public class MainMenu : MonoBehaviour
         if (hover && !padNav) focus = id;
         bool focused = padNav ? id == focus : hover;
 
+        // Выбранная кнопка всегда выглядит одинаково: лаймовая плашка и тёмный текст (у текстовых пунктов — лаймовый текст)
         if (bg.HasValue)
         {
-            UI.Box(r, focused ? Color.Lerp(bg.Value, Color.white, 0.15f) : bg.Value);
-            if (focused) UI.Box(new Rect(r.x, r.yMax - 5, r.width, 5), UI.Lime);     // выбранная плашка — лаймовая полоса снизу
+            UI.Box(r, focused ? UI.Lime : bg.Value);
+            if (focused) UI.Box(new Rect(r.x - 4, r.y - 4, r.width + 8, 4), Color.white);   // тонкая рамка сверху — заметно издалека
         }
         else if (focused && anchor == TextAnchor.MiddleLeft)
             UI.Box(new Rect(r.x - 22, r.y + r.height * 0.3f, 8, r.height * 0.4f), UI.Lime);
         Rect tr = bg.HasValue ? new Rect(r.x + 18, r.y, r.width - 36, r.height) : r;
-        UI.Label(tr, text, font, size, focused && !bg.HasValue ? UI.Lime : color, anchor);
+        UI.Label(tr, text, font, size, focused ? (bg.HasValue ? UI.Dark : UI.Lime) : color, anchor);
 
         bool clicked = GUI.Button(r, GUIContent.none, GUIStyle.none);
         if (activate && id == focus && e.type == EventType.Repaint) { activate = false; clicked = true; }
@@ -282,11 +283,9 @@ public class MainMenu : MonoBehaviour
     bool PanelButton(Rect r, string text, int size = 30) =>
         Button(r, text, UI.Head, size, Color.white, TextAnchor.MiddleCenter, UI.PanelColor);
 
-    bool LimeButton(Rect r, string text, int size = 30)
-    {
-        UI.Box(r, UI.Lime);
-        return Button(r, text, UI.Head, size, UI.Dark, TextAnchor.MiddleCenter, new Color(0.72f, 0.95f, 0.16f, 0f));
-    }
+    /// <summary>Главная кнопка экрана: в покое — тёмно-зелёная с лаймовым текстом, выбранная — лаймовая.</summary>
+    bool LimeButton(Rect r, string text, int size = 30) =>
+        Button(r, text, UI.Head, size, UI.Lime, TextAnchor.MiddleCenter, new Color(0.2f, 0.3f, 0.08f, 0.95f));
 
     static void Tag(Rect r, string text, Color bg, Color fg)
     {
@@ -773,6 +772,9 @@ public class MainMenu : MonoBehaviour
         if (PanelButton(Row(ref y), "УПРАВЛЕНИЕ (ГЕЙМПАД И КЛАВИАТУРА)")) SetPage(Page.Controls);
         if (PanelButton(Row(ref y), "<color=#FF8A3D>СБРОСИТЬ ПРОГРЕСС</color>")) SetPage(Page.ResetConfirm);
 
+        UI.Label(new Rect(60, 928, 1700, 40), "Ввод: " + GameInput.BackendInfo, UI.Body, 22,
+                 GameInput.FullGamepadSupport ? UI.Muted : UI.Orange, TextAnchor.MiddleLeft);
+
         if (BackButton()) SetPage(Page.Main);
     }
 
@@ -790,7 +792,7 @@ public class MainMenu : MonoBehaviour
         {
             { "АТАКА", "XBOX", "PLAYSTATION", "КЛАВИАТУРА" },
             { "Бег / финты", "Левый стик / правый стик", "L3 / R3", "WASD / T F G H" },
-            { "Пас низом (с RB — прострел)", "A", "Крест", "J" },
+            { "Пас низом (держать — сила; с RB — прострел)", "A", "Крест", "J" },
             { "Удар, головой (с RB — закрученный)", "B", "Круг", "K" },
             { "Навес / длинный / перевод (держать — сила)", "X", "Квадрат", "L" },
             { "Пас на ход (держать — сила; с RB — навесом)", "Y", "Треугольник", "I" },

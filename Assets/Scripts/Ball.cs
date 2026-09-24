@@ -25,17 +25,18 @@ public class Ball : MonoBehaviour
     [Range(0f, 1f)] public float bounciness = 0.5f;
 
     [Header("Контроль мяча")]
-    public float holdDistance = 0.7f;          // мяч перед игроком при обычном ведении
-    public float sprintHoldDistance = 1.05f;   // на спринте касания чуть длиннее — мяч легче отобрать
-    public float shieldHoldDistance = 0.7f;    // при укрывании мяч с дальней от соперника стороны
-    public float holdStiffness = 30f;          // насколько жёстко мяч «прилипает» к ноге при ведении
+    public float diameter = 0.28f;             // размер мяча, м (настоящий — 0.22; чуть крупнее, чтобы было видно)
+    public float holdDistance = 0.45f;         // мяч у самой ноги при обычном ведении
+    public float sprintHoldDistance = 0.75f;   // на спринте касания чуть длиннее — мяч легче отобрать
+    public float shieldHoldDistance = 0.5f;    // при укрывании мяч с дальней от соперника стороны
+    public float holdStiffness = 45f;          // насколько жёстко мяч «прилипает» к ноге при ведении
     public float trapSpeed = 18f;              // быстрее этого (относительно игрока) полевой мяч не остановит вовсе
     public float softTouchSpeed = 12f;         // до этой скорости приём чистый, выше — мяч отскакивает от ноги
     public float controlledTouchBonus = 3f;    // (для ИИ-партнёров без паса) приём прощается чуть больше
     public float receiverTrapSpeed = 26f;      // адресат паса и твой игрок останавливают мяч до этой скорости
-    public float keeperCatchSpeed = 20f;       // вратарь ловит медленнее этого…
-    public float keeperParrySpeed = 36f;       // …и отбивает до этого
-    public float bodyRadius = 0.5f;
+    public float keeperCatchSpeed = 14f;       // вратарь ловит медленнее этого…
+    public float keeperParrySpeed = 28f;       // …и отбивает до этого (сильнее — мяч проходит мимо рук)
+    public float bodyRadius = 0.35f;
     public float ownerBonus = 0.35f;           // чтобы отобрать мяч, нужно быть ближе владельца на столько
 
     public Rigidbody Body { get; private set; }
@@ -57,6 +58,7 @@ public class Ball : MonoBehaviour
         Body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
         Col = GetComponent<SphereCollider>();
+        transform.localScale = Vector3.one * diameter / (Col.radius * 2f);   // сфера-примитив: radius 0.5 → масштаб = диаметр
         Radius = Col.radius * transform.lossyScale.x;
         Col.material = new PhysicsMaterial("Ball")
         {

@@ -80,7 +80,7 @@ public class MatchManager : MonoBehaviour
     Transform marker, nextSwitch;                    // индикаторы: над тобой и над тем, на кого переключит LB
 
     Player runner, celebrant;                        // кто забегает по LB; кто забил (камера на него)
-    float runUntil, autoSwitchAt, markTimer, flashTimer, shakeTime, shakeAmp, manualSwitchUntil;
+    float runUntil, autoSwitchAt, markTimer, flashTimer, shakeTime, shakeAmp, manualSwitchUntil, looseSwitchCooldown;
     string flashText;
     Vector3 camVel;
     Dictionary<Player, Player> marks = new Dictionary<Player, Player>();   // защитник → опекаемый
@@ -131,8 +131,8 @@ public class MatchManager : MonoBehaviour
 
         var ballGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         ballGo.name = "Ball";
-        ballGo.transform.position = new Vector3(0f, 0.25f, 0f);
-        ballGo.transform.localScale = Vector3.one * 0.5f;
+        ballGo.transform.position = new Vector3(0f, 0.14f, 0f);
+        ballGo.transform.localScale = Vector3.one * 0.28f;      // точный размер задаёт Ball.diameter
         var newBall = ballGo.AddComponent<Ball>();   // Rigidbody добавится через RequireComponent
 
         var mm = new GameObject("Match").AddComponent<MatchManager>();
@@ -258,6 +258,7 @@ public class MatchManager : MonoBehaviour
         if (passReceiver != null && (passTimer -= Time.deltaTime) <= 0f) passReceiver = null;
         if (autoSwitchAt > 0f && Time.time >= autoSwitchAt) { autoSwitchAt = 0f; DoAutoSwitch(); }
         HandleSwitchInput();
+        LooseBallAutoSelect();
         // Вратарём управляешь только пока мяч у него: отдал — управление переходит к полевому
         if (controlled != null && controlled.role == Role.Keeper && !controlled.HasBall && !IsTaker(controlled))
         {
@@ -362,6 +363,11 @@ public class MatchManager : MonoBehaviour
         shakeTime -= dt;
         cam.transform.position = pos2 + ShakeOffset(dt);
         cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, rot, k);
+        if (!cam.orthographic)
+        {
+            bool sprint = controlled != null && controlled.IsSprinting && controlled.Velocity.magnitude > controlled.runSpeed;
+            cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, sideFov + (sprint ? 5f : 0f), 1f - Mathf.Exp(-3f * dt));
+        }
     }
 
     Vector3 lastShake;
@@ -634,6 +640,24 @@ public class MatchManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Мяч ничей (летит или катится) — управление само переходит к игроку, который ближе всех к его пути.
+    /// Не срабатывает в режиме автосмены «Вручную», сразу после ручной смены и когда мяч летит адресату твоего паса.
+    /// </summary>
+    void LooseBallAutoSelect()
+    {
+        if (phase != Phase.Play || controlled == null || ball.Owner != null || ball.Held) return;
+        if (Profile.Current.autoSwitch == 2 || Time.time < manualSwitchUntil || Time.time < looseSwitchCooldown) return;
+        if (passReceiver != null && passReceiver.team == HumanTeam) return;
+        Player best = BestInterceptor(out float bestD);
+        float cur = controlled.role == Role.Keeper ? float.MaxValue : DistanceToBallPath(controlled);
+        if (best != null && best != controlled && cur - bestD > 1f)
+        {
+            controlled = best;
+            looseSwitchCooldown = Time.time + 0.5f;       // не «дёргаем» управление чаще, чем раз в полсекунды
+        }
+    }
+
     /// <summary>Мяч стал ничьим (рикошет, отбив, плохое касание, штанга).</summary>
     public void OnLooseBall()
     {
@@ -834,6 +858,22 @@ public class MatchManager : MonoBehaviour
         return ClampToField(p.homePos + new Vector3(b.x * 0.55f + forward, 0f, b.z * 0.35f), 1f);
     }
 
+    /// <summary>
+    /// Точка поддержки, когда мяч у своей команды: не «своя позиция» где-то далеко, а место рядом с игроком
+    /// с мячом — защитники страхуют сзади-сбоку, нападающие открываются впереди по флангам (треугольники для паса).
+    /// </summary>
+    public Vector3 SupportPos(Player p)
+    {
+        Player owner = ball.Owner;
+        Vector3 anchor = owner != null ? owner.Position : new Vector3(ball.transform.position.x, 0f, ball.transform.position.z);
+        Vector3 fwd = p.team == Team.Red ? Vector3.right : Vector3.left;
+        bool defender = Mathf.Abs(p.homePos.x) > L * 0.4f;
+        float side = p.homePos.z >= 0f ? 1f : -1f;
+        Vector3 pos = anchor + fwd * (defender ? -5f : 7f) + Vector3.forward * side * (defender ? 5f : 6f);
+        pos = Vector3.Lerp(FormationPos(p, true), pos, 0.65f);     // немного держим строй
+        return ClampToField(pos, 1f);
+    }
+
     public Vector3 ClampToField(Vector3 v, float margin) =>
         new Vector3(Mathf.Clamp(v.x, -L + margin, L - margin), 0f, Mathf.Clamp(v.z, -W + margin, W - margin));
 
@@ -855,7 +895,7 @@ public class MatchManager : MonoBehaviour
     /// свободнее линия паса (нет соперников рядом с отрезком), тем лучше. Для навеса линия не важна.
     /// Вратарь — только если больше некому.
     /// </summary>
-    public Player FindPassTarget(Player passer, Vector3 prefDir, float maxAngle, bool ignoreLane, float maxDist = 28f)
+    public Player FindPassTarget(Player passer, Vector3 prefDir, float maxAngle, bool ignoreLane, float maxDist = 28f, float preferDist = -1f)
     {
         Vector3 from = passer.Position;
         prefDir.y = 0f;
@@ -870,7 +910,7 @@ public class MatchManager : MonoBehaviour
             float angle = Vector3.Angle(prefDir, to);
             if (angle > maxAngle) continue;
 
-            float score = -angle * 1.2f - d * 0.4f;
+            float score = -angle * 1.2f - (preferDist > 0f ? Mathf.Abs(d - preferDist) * 1.2f : d * 0.4f);
             if (mate.role == Role.Keeper) score -= 60f;
             if (!ignoreLane)
                 foreach (var opp in players)

@@ -16,7 +16,7 @@ public class Player : MonoBehaviour
     public float aiSpeed = 5.5f;
     public float runSpeed = 5.8f;          // твой игрок
     public float sprintSpeed = 8.8f;       // твой игрок со спринтом (RT) — заметно быстрее бега
-    public float keeperSpeed = 4.5f;
+    public float keeperSpeed = 4f;
     public float accel = 35f;
 
     [Header("Выносливость (0…1)")]
@@ -36,8 +36,9 @@ public class Player : MonoBehaviour
     [Header("Отбор и вратарь")]
     public float slideSpeed = 10f, slideTime = 0.4f, slideRecover = 0.5f;
     public float tackleTime = 0.35f, tackleCooldownTime = 0.9f, tackleLunge = 8.5f, tackleRange = 2.2f;
-    public float diveSpeed = 7f, diveTime = 0.4f, diveReach = 0.6f;
-    [HideInInspector] public float keeperSkill = 0.85f;  // шанс, что вратарь успеет прыгнуть
+    public float diveSpeed = 6f, diveTime = 0.4f, diveReach = 0.4f;
+    [HideInInspector] public float keeperSkill = 0.6f;     // шанс, что вратарь вообще прыгнет
+    [HideInInspector] public float keeperReaction = 0.25f; // время реакции вратаря на удар, с
 
     [Header("Состояние (заполняет MatchManager)")]
     public Team team;
@@ -61,12 +62,13 @@ public class Player : MonoBehaviour
     float tackleTimer, tackleCooldown, slideTimer, recoverTimer;
     bool tackleResolved;
     float diveTimer, diveCooldown, skillTimer, headerBuffer, openTimer;
+    float shotSeenAt = -1f, afterPassRunUntil;
     Vector3 slideDir, diveDir, skillVel, openTarget;
     float passBuffer, shotBuffer, bufferedCharge;
     PassKind bufferedPass;
     float bufferedPassPower = -1f;                // сила навеса/паса на ход (−1 — подбирается автоматически)
     bool bufferedFinesse, shotArmed, headerShot;
-    bool lobArmed, throughArmed, throughLofted;
+    bool lobArmed, throughArmed, throughLofted, groundArmed;
     bool sprinting, shielding;
 
     // ------------------------------------------------------------ свойства для Ball / MatchManager
@@ -112,7 +114,9 @@ public class Player : MonoBehaviour
     public void Init(MatchManager m, Team t, Role r, Vector3 home, string name)
     {
         mm = m; team = t; role = r; homePos = home; displayName = name;
-        if (r == Role.Keeper) controlRadius = 1.3f;
+        if (r == Role.Keeper) controlRadius = 1.0f;
+        var capsule = GetComponent<CapsuleCollider>();
+        if (capsule != null) capsule.radius = 0.35f;   // игроки «уже», чем капсула по умолчанию: можно подойти вплотную к мячу
 
         rb = gameObject.AddComponent<Rigidbody>();
         rb.mass = 70f;
@@ -147,7 +151,8 @@ public class Player : MonoBehaviour
         float mult = Catalog.DifficultySpeed[level];
         aiSpeed *= mult;
         keeperSpeed *= mult;
-        keeperSkill = new[] { 0.55f, 0.75f, 0.9f }[level];
+        keeperSkill = new[] { 0.35f, 0.55f, 0.75f }[level];
+        keeperReaction = new[] { 0.32f, 0.25f, 0.18f }[level];
     }
 
     public void ResetTo(Vector3 p, Vector3 facing)
@@ -261,6 +266,7 @@ public class Player : MonoBehaviour
 
         bool useAim = IsControlled || mm.IsTaker(this) || (role == Role.Keeper && HasBall) || skillTimer > 0f;
         Vector3 face = Sliding ? slideDir : useAim ? aim : flat;
+        if (!useAim && !Sliding && flat.sqrMagnitude < 1f) face = BallPos - Position;   // стоим — смотрим на мяч
         if (face.sqrMagnitude > 0.01f)
             rb.MoveRotation(Quaternion.Slerp(rb.rotation, Quaternion.LookRotation(face), 14f * Time.fixedDeltaTime));
     }
@@ -305,17 +311,24 @@ public class Player : MonoBehaviour
             if (GameInput.Held(Btn.Through)) mm.RequestKeeperRush();       // Y / Треугольник — выход вратаря
             if (GameInput.Held(Btn.Modifier)) mm.RequestTeammatePress();   // RB / R1 — прессинг партнёра
             charge = 0f; passCharge = 0f; passBuffer = 0f; shotBuffer = 0f;
-            shotArmed = false; lobArmed = false; throughArmed = false;
+            shotArmed = false; lobArmed = false; throughArmed = false; groundArmed = false;
             return;
         }
 
         // ---------------- АТАКА / СВОБОДНЫЙ МЯЧ
-        // A — пас по земле: сразу, сила подбирается автоматически (с RB — прострел)
-        if (GameInput.Down(Btn.Pass)) { passBuffer = 0.25f; bufferedPass = modifier ? PassKind.Driven : PassKind.Ground; bufferedPassPower = -1f; headerBuffer = 0.3f; headerShot = false; }
+        // A — пас по земле: держишь — набираешь силу, отпускаешь — пас (с RB — прострел).
+        // Даже короткое нажатие доводит мяч до адресата; сила делает пас быстрее и позволяет отдать дальнему партнёру.
+        if (GameInput.Down(Btn.Pass)) { groundArmed = true; lobArmed = false; throughArmed = false; passCharge = 0f; headerBuffer = 0.3f; headerShot = false; }
+        if (groundArmed && GameInput.Held(Btn.Pass)) passCharge = Mathf.Min(1f, passCharge + Time.deltaTime / passChargeTime);
+        if (groundArmed && GameInput.Up(Btn.Pass))
+        {
+            passBuffer = 0.3f; bufferedPass = modifier ? PassKind.Driven : PassKind.Ground; bufferedPassPower = passCharge;
+            groundArmed = false; passCharge = 0f;
+        }
 
         // X — навес и Y — пас на ход: держишь — набираешь силу (дальность), отпускаешь — удар
-        if (GameInput.Down(Btn.Lob)) { lobArmed = true; throughArmed = false; passCharge = 0f; }
-        if (GameInput.Down(Btn.Through)) { throughArmed = true; lobArmed = false; passCharge = 0f; throughLofted = modifier; }
+        if (GameInput.Down(Btn.Lob)) { lobArmed = true; throughArmed = false; groundArmed = false; passCharge = 0f; }
+        if (GameInput.Down(Btn.Through)) { throughArmed = true; lobArmed = false; groundArmed = false; passCharge = 0f; throughLofted = modifier; }
         if (lobArmed && GameInput.Held(Btn.Lob) || throughArmed && GameInput.Held(Btn.Through))
             passCharge = Mathf.Min(1f, passCharge + Time.deltaTime / passChargeTime);
         if (lobArmed && GameInput.Up(Btn.Lob))
@@ -355,8 +368,8 @@ public class Player : MonoBehaviour
                 case PassKind.Lob: ok = TryLob(aim, false, bufferedPassPower); break;
                 case PassKind.LobThrough: ok = TryLob(aim, true, bufferedPassPower); break;
                 case PassKind.Through: ok = TryThrough(aim, bufferedPassPower) || TryPass(aim, 70f, false); break;
-                case PassKind.Driven: ok = TryPass(aim, 70f, true); break;
-                default: ok = TryPass(aim, 70f, false); break;
+                case PassKind.Driven: ok = TryPass(aim, 70f, true, bufferedPassPower); break;
+                default: ok = TryPass(aim, 70f, false, bufferedPassPower); break;
             }
             if (!ok && (taker || role == Role.Keeper)) Kick(aim, 12f, 0.3f, null);   // на стандарте не застреваем
         }
@@ -466,9 +479,15 @@ public class Player : MonoBehaviour
         {
             target = Vector3.Lerp(mm.FormationPos(this, false), markPos, 0.7f);     // персональная опека, но держим строй
         }
+        else if (weHaveBall && Time.time < afterPassRunUntil)
+        {
+            // Отдал пас — не убегаем на позицию, а открываемся вперёд под ответный пас
+            target = Position + AttackDir * 5f + new Vector3(0f, 0f, -Position.z * 0.25f);
+            mul = 1.1f;
+        }
         else if (weHaveBall)
         {
-            target = OpenSpace();                                                   // открываемся под пас
+            target = OpenSpace();                                                   // открываемся рядом с мячом под пас
         }
         else
         {
@@ -483,7 +502,7 @@ public class Player : MonoBehaviour
     {
         if (openTimer > 0f) return openTarget;
         openTimer = 0.4f + Random.value * 0.2f;
-        Vector3 basePos = mm.FormationPos(this, true);
+        Vector3 basePos = mm.SupportPos(this);   // точка поддержки рядом с игроком с мячом, а не далёкая «позиция»
         Vector3 ball = BallPos;
         float bestScore = float.MinValue;
         openTarget = basePos;
@@ -573,8 +592,13 @@ public class Player : MonoBehaviour
             return;
         }
 
+        // Удар в сторону ворот: вратарь замечает его не сразу, а через время реакции
+        if (bv.x * inField < -10f) { if (shotSeenAt < 0f) shotSeenAt = Time.time; }
+        else shotSeenAt = -1f;
+        bool reacted = shotSeenAt >= 0f && Time.time - shotSeenAt >= keeperReaction;
+
         // Прыжок: удар идёт в створ, а вратарь не успевает дойти шагом
-        if (diveCooldown <= 0f && bv.x * inField < -10f)
+        if (diveCooldown <= 0f && reacted)
         {
             float t = (gx + inField * 0.3f - b.x) / bv.x;
             float zc = b.z + bv.z * t;
@@ -594,10 +618,11 @@ public class Player : MonoBehaviour
         // Y / Треугольник в обороне: твой вратарь выходит на мяч
         if (team == MatchManager.HumanTeam && mm.KeeperRush) { MoveTo(b, 1.1f); return; }
 
-        // 1) На линии ворот, смещаясь за мячом
-        float z = b.z * 0.5f;
-        // 2) Мяч летит в ворота — встаём в точку пересечения траектории с линией
-        if (bv.x * inField < -2f)
+        // 1) На линии ворот, смещаясь за мячом (с запаздыванием на реакцию — вратарь не «приклеен» к мячу)
+        Vector3 seen = b - bv * keeperReaction;
+        float z = seen.z * 0.5f;
+        // 2) Мяч летит в ворота — встаём в точку пересечения траектории с линией (только когда среагировал)
+        if (reacted)
         {
             float t = (lineX - b.x) / bv.x;
             if (t > 0f && t < 1.5f) z = b.z + bv.z * t;
@@ -837,13 +862,16 @@ public class Player : MonoBehaviour
     }
 
     /// <summary>Пас низом (A) или прострел (RB+A) лучшему партнёру в секторе. Сила — чтобы мяч пришёл «в ноги».</summary>
-    bool TryPass(Vector3 prefDir, float maxAngle, bool driven)
+    bool TryPass(Vector3 prefDir, float maxAngle, bool driven, float power01 = -1f)
     {
         if (!CanKick) return false;
-        Player mate = mm.FindPassTarget(this, prefDir, maxAngle, false);
+        // Сила выбирает дистанцию: короткое нажатие — ближний партнёр, долгое — дальний (как в FIFA)
+        float preferDist = power01 > 0.25f ? Mathf.Lerp(6f, 28f, power01) : -1f;
+        Player mate = mm.FindPassTarget(this, prefDir, maxAngle, false, 28f, preferDist);
         if (mate == null) return false;
 
         float arrive = driven ? drivenArriveSpeed : passArriveSpeed;
+        if (power01 > 0f) arrive = Mathf.Lerp(arrive, arrive + 7f, power01);   // сильнее — быстрее доходит
         Vector3 target = mate.Position;
         float power = arrive;
         for (int i = 0; i < 2; i++)
@@ -939,5 +967,6 @@ public class Player : MonoBehaviour
         kickCooldown = 0.3f;   // не «подбираем» и не блокируем свой же удар
         aim = Flat(dir).normalized;
         mm.OnKick(this, receiver, lift > 3f);
+        if (receiver != null && receiver != this) afterPassRunUntil = Time.time + 1.6f;   // отдал — открывайся («стенка»)
     }
 }
