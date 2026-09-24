@@ -55,6 +55,21 @@ public static class GameInput
     public static bool FullGamepadSupport => false;
 #endif
 
+    /// <summary>Живые значения курков — чтобы в настройках было видно, что именно читает игра.</summary>
+    public static string TriggerDebug
+    {
+        get
+        {
+#if MF_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
+            var g = Gamepad.current;
+            return g == null ? "геймпад не найден"
+                : $"RT (спринт): {g.rightTrigger.ReadValue():0.00}    LT (выжидание): {g.leftTrigger.ReadValue():0.00}";
+#else
+            return $"RT (спринт): {Axis("MF RT"):0.00}    LT (выжидание): {Axis("MF LT"):0.00}";
+#endif
+        }
+    }
+
 #if MF_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
     static Keyboard K => Keyboard.current;
     static Gamepad G => Gamepad.current;
@@ -227,9 +242,10 @@ public static class GameInput
     }
     public static bool Held(Btn b)
     {
-        // Курки в старом Input Manager — оси «MF RT» / «MF LT» (Xbox: 10-я и 9-я) или общая «MF Triggers» (3-я)
-        if (b == Btn.Sprint && (Axis("MF RT") > 0.15f || Axis("MF Triggers") < -0.15f)) { UsingGamepad = true; return true; }
-        if (b == Btn.Jockey && (Axis("MF LT") > 0.15f || Axis("MF Triggers") > 0.15f)) { UsingGamepad = true; return true; }
+        // Курки в старом Input Manager — только отдельные оси «MF RT» / «MF LT» (Xbox: 10-я и 9-я).
+        // Общую ось обоих курков не читаем: у разных драйверов знак на ней разный, и RT мог засчитаться как LT (замедление).
+        if (b == Btn.Sprint && Axis("MF RT") > 0.15f) { UsingGamepad = true; return true; }
+        if (b == Btn.Jockey && Axis("MF LT") > 0.15f) { UsingGamepad = true; return true; }
         return Input.GetKey(KeyOf(b)) || (PadOf(b) != KeyCode.None && Input.GetKey(PadOf(b)));
     }
 

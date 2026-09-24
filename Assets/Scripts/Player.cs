@@ -316,8 +316,9 @@ public class Player : MonoBehaviour
         Player owner = Ball.Owner;
         bool defending = owner != null && owner.team != team;
         bool modifier = GameInput.Held(Btn.Modifier);   // RB / R1
-        bool slow = GameInput.Held(Btn.Jockey);         // LT / L2
-        bool wantSprint = GameInput.Held(Btn.Sprint) && !slow;
+        // RT — спринт. Спринт всегда главнее: пока зажат RT, игрок никогда не замедляется (LT и укрывание игнорируются)
+        bool wantSprint = GameInput.Held(Btn.Sprint);
+        bool slow = !wantSprint && GameInput.Held(Btn.Jockey);   // LT / L2 — выжидание, только без спринта
         // Пас летит тебе — игрок сам выходит на мяч; стиком в это время выбираешь направление первого касания
         bool receiving = mm.passReceiver == this && owner == null && !Ball.Held;
 
@@ -328,7 +329,7 @@ public class Player : MonoBehaviour
             float spd = wantSprint ? SprintSpeedNow : runSpeed;
             sprinting = wantSprint && dir.sqrMagnitude > 0.1f;
             if (role == Role.Keeper) spd = runSpeed * 0.8f;                                   // вратарь с мячом в руках
-            else if (HasBall && (slow || modifier)) { shielding = true; spd = runSpeed * 0.5f; }  // укрывание корпусом
+            else if (HasBall && !wantSprint && (slow || modifier)) { shielding = true; spd = runSpeed * 0.5f; }  // укрывание корпусом
             else if (slow) spd = runSpeed * 0.55f;                                           // выжидание лицом к атаке
             desiredVel = dir * spd;
             if (role == Role.Keeper) desiredVel = KeepInsideBox(desiredVel);

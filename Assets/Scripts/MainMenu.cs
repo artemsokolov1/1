@@ -772,8 +772,9 @@ public class MainMenu : MonoBehaviour
         if (PanelButton(Row(ref y), "УПРАВЛЕНИЕ (ГЕЙМПАД И КЛАВИАТУРА)")) SetPage(Page.Controls);
         if (PanelButton(Row(ref y), "<color=#FF8A3D>СБРОСИТЬ ПРОГРЕСС</color>")) SetPage(Page.ResetConfirm);
 
-        UI.Label(new Rect(60, 928, 1700, 40), "Ввод: " + GameInput.BackendInfo, UI.Body, 22,
+        UI.Label(new Rect(60, 900, 1700, 36), "Ввод: " + GameInput.BackendInfo, UI.Body, 22,
                  GameInput.FullGamepadSupport ? UI.Muted : UI.Orange, TextAnchor.MiddleLeft);
+        UI.Label(new Rect(60, 936, 1700, 36), "Проверка курков (нажми): " + GameInput.TriggerDebug, UI.Body, 22, Color.white, TextAnchor.MiddleLeft);
 
         if (BackButton()) SetPage(Page.Main);
     }

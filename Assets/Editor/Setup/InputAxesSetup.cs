@@ -21,7 +21,6 @@ static class InputAxesSetup
     {
         new AxisDef("MF RT", 9),          // 10-я ось — правый курок (0…1)
         new AxisDef("MF LT", 8),          // 9-я ось — левый курок (0…1)
-        new AxisDef("MF Triggers", 2),    // 3-я ось — оба курка вместе (старые драйверы)
         new AxisDef("MF RX", 3),          // 4-я ось — правый стик X
         new AxisDef("MF RY", 4),          // 5-я ось — правый стик Y
     };
