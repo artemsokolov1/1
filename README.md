@@ -4,30 +4,37 @@
 мяч с аркадной физикой, пас/удар, ИИ полевых и вратарей, голы, счёт, таймер 60 с, изометрическая камера.
 Без меню, графики и звука.
 
-Целевая версия: **Unity 6 (6000.x)**, любой шаблон — 3D (Built-in) или URP. Работает и с новым Input System, и со старым Input Manager.
+Это готовый Unity-проект: его достаточно открыть в Unity 6 и нажать Play. Рендер встроенный (Built-in), ввод — старый Input Manager; скрипты работают и с новым Input System, и с URP.
+
+## Как открыть (готовый проект)
+
+1. Скачать репозиторий: **Code → Download ZIP** (распаковать) или `git clone`.
+2. **Unity Hub → Add → Add project from disk** → выбрать папку репозитория (где лежат `Assets`, `Packages`, `ProjectSettings`).
+3. Открыть проект в **Unity 6** (любая 6000.x). Если Hub пишет, что версия `6000.0.23f1` не установлена, выбери свою установленную Unity 6 и согласись на обновление.
+4. Первый импорт займёт пару минут. Потом редактор-скрипт сам создаст сцену `Assets/Scenes/Main.unity` (камера, свет, `Ball`, `Match`) и откроет её.
+5. Нажать **Play**.
+
+Если сцена не открылась сама, открой `Assets/Scenes/Main.unity` или выбери в меню **Mini Football → Пересоздать сцену**.
+Даже в пустой сцене по Play игра соберётся сама: `MatchManager` создаёт всё нужное при старте.
 
 ## Файлы
 
-| Файл | Куда вешать | Что делает |
-|---|---|---|
-| `Assets/Scripts/MatchManager.cs` | пустой объект `Match` | строит поле/ворота/борта, спавнит игроков, голы, счёт, таймер, сброс, камера, HUD |
-| `Assets/Scripts/Ball.cs` | Sphere `Ball` | физика мяча (отскоки, трение качения), удар, детект входа в триггер ворот |
-| `Assets/Scripts/Player.cs` | никуда (добавляется из кода) | управление с клавиатуры, ИИ полевого и вратаря, пас/удар/ведение, обёртка ввода |
+| Файл | Что делает |
+|---|---|
+| `Assets/Scripts/MatchManager.cs` | висит на объекте `Match`: строит поле, ворота и борта, спавнит игроков, считает голы и время, сбрасывает позиции, ведёт камеру и рисует HUD. Здесь же автозапуск |
+| `Assets/Scripts/Ball.cs` | висит на сфере `Ball`: физика мяча (отскоки, трение качения), удар, детект входа в триггер ворот |
+| `Assets/Scripts/Player.cs` | добавляется из кода на каждую капсулу: управление с клавиатуры, ИИ полевого и вратаря, пас, удар, ведение, обёртка ввода |
+| `Assets/Editor/MiniFootballSetup.cs` | при первом открытии создаёт и открывает сцену `Main.unity`, добавляет её в Build Settings |
 
-## Шаги сборки сцены
+## Сборка сцены вручную (если захочется)
 
-1. **Проект** → Unity Hub → New project → шаблон *3D* или *Universal 3D*.
-2. **Скрипты** → скопировать папку `Assets/Scripts` из этого репозитория в `Assets/` проекта. Дождаться компиляции.
-3. **Сцена** → File → New Scene (Basic). В ней уже есть *Main Camera* и *Directional Light* — их оставить.
-4. **Мяч** → GameObject → 3D Object → **Sphere**, имя `Ball`, Position `(0, 0.25, 0)`, Scale `(0.5, 0.5, 0.5)`.
-   → Add Component → **Ball** (Rigidbody добавится сам).
-5. **Менеджер матча** → GameObject → Create Empty, имя `Match`.
-   → Add Component → **MatchManager**.
-   → в инспекторе перетащить `Ball` в поле *Ball*, `Main Camera` в поле *Cam*.
-6. **Play.** Поле, разметка, борта, ворота с триггерами и 10 игроков создаются кодом при старте.
+1. Новая сцена (Basic) — в ней уже есть *Main Camera* и *Directional Light*.
+2. GameObject → 3D Object → **Sphere**, имя `Ball`, Position `(0, 0.25, 0)`, Scale `(0.5, 0.5, 0.5)` → Add Component → **Ball**.
+3. GameObject → Create Empty, имя `Match` → Add Component → **MatchManager** → в поле *Ball* перетащить `Ball`, в поле *Cam* — `Main Camera`.
+4. Play.
 
-> Unity 2022 и старше: заменить `linearVelocity` → `velocity`, `linearDamping` → `drag`, `angularDamping` → `angularDrag`,
-> `PhysicsMaterial` → `PhysicMaterial`, `PhysicsMaterialCombine` → `PhysicMaterialCombine`.
+> Для Unity 2022 и старше нужны замены: `linearVelocity` → `velocity`, `linearDamping` → `drag`, `angularDamping` → `angularDrag`,
+> `PhysicsMaterial` → `PhysicMaterial`, `PhysicsMaterialCombine` → `PhysicMaterialCombine`, `FindAnyObjectByType` → `FindObjectOfType`.
 
 ## Управление
 

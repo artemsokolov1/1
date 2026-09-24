@@ -45,9 +45,49 @@ public class MatchManager : MonoBehaviour
 
     void Awake() => I = this;
 
+    /// <summary>
+    /// Автозапуск: если в открытой сцене нет MatchManager — создаём всё сами.
+    /// Игра стартует по Play в любой сцене, даже в пустой.
+    /// </summary>
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    static void AutoBootstrap()
+    {
+        if (FindAnyObjectByType<MatchManager>() == null) CreateSceneObjects();
+    }
+
+    /// <summary>Создаёт камеру/свет (если их нет), мяч и объект Match со ссылками. Используется и редактор-скриптом.</summary>
+    public static MatchManager CreateSceneObjects()
+    {
+        Camera camera = Camera.main;
+        if (camera == null)
+        {
+            var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
+            camera = camGo.AddComponent<Camera>();
+            camGo.AddComponent<AudioListener>();
+        }
+        if (FindAnyObjectByType<Light>() == null)
+        {
+            var light = new GameObject("Directional Light").AddComponent<Light>();
+            light.type = LightType.Directional;
+            light.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
+        }
+
+        var ballGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        ballGo.name = "Ball";
+        ballGo.transform.position = new Vector3(0f, 0.25f, 0f);
+        ballGo.transform.localScale = Vector3.one * 0.5f;
+        var newBall = ballGo.AddComponent<Ball>();   // Rigidbody добавится через RequireComponent
+
+        var mm = new GameObject("Match").AddComponent<MatchManager>();
+        mm.ball = newBall;
+        mm.cam = camera;
+        return mm;
+    }
+
     // Start, а не Awake: к этому моменту Ball.Awake уже отработал
     void Start()
     {
+        if (cam == null) cam = Camera.main;
         BuildArena();
         SpawnTeams();
 
