@@ -49,7 +49,7 @@ public static class GameInput
         {
             string[] pads = Input.GetJoystickNames();
             string pad = pads.Length > 0 && !string.IsNullOrEmpty(pads[0]) ? pads[0] : "не найден";
-            return "Старый Input Manager (курки RT/LT и правый стик не работают) — геймпад: " + pad;
+            return "Старый Input Manager (курки и правый стик — через дополнительные оси; лучше включить Input System) — геймпад: " + pad;
         }
     }
     public static bool FullGamepadSupport => false;
@@ -119,8 +119,12 @@ public static class GameInput
         return pad || key;
     }
 
-    public static bool Held(Btn b) =>
-        (Pad(b) != null && Pad(b).isPressed) || (Key(b) != null && Key(b).isPressed) || (AltKey(b) != null && AltKey(b).isPressed);
+    public static bool Held(Btn b)
+    {
+        // Курки (RT — спринт, LT — выжидание): хватает лёгкого нажатия, не нужно давить до половины хода
+        if ((b == Btn.Sprint || b == Btn.Jockey) && Pad(b) != null && Pad(b).ReadValue() > 0.15f) { UsingGamepad = true; return true; }
+        return (Pad(b) != null && Pad(b).isPressed) || (Key(b) != null && Key(b).isPressed) || (AltKey(b) != null && AltKey(b).isPressed);
+    }
 
     public static bool Up(Btn b) =>
         (Pad(b) != null && Pad(b).wasReleasedThisFrame) || (Key(b) != null && Key(b).wasReleasedThisFrame);
@@ -197,7 +201,7 @@ public static class GameInput
         return KeyCode.None;
     }
 
-    // Кнопки джойстика в старом Input Manager (раскладка Xbox на Windows). Курки здесь недоступны — только клавиатура.
+    // Кнопки джойстика в старом Input Manager (раскладка Xbox на Windows). Курки — через оси, см. Held().
     static KeyCode PadOf(Btn b)
     {
         switch (b)
@@ -221,11 +225,31 @@ public static class GameInput
         if (key) UsingGamepad = false;
         return pad || key;
     }
-    public static bool Held(Btn b) => Input.GetKey(KeyOf(b)) || (PadOf(b) != KeyCode.None && Input.GetKey(PadOf(b)));
+    public static bool Held(Btn b)
+    {
+        // Курки в старом Input Manager — оси «MF RT» / «MF LT» (Xbox: 10-я и 9-я) или общая «MF Triggers» (3-я)
+        if (b == Btn.Sprint && (Axis("MF RT") > 0.15f || Axis("MF Triggers") < -0.15f)) { UsingGamepad = true; return true; }
+        if (b == Btn.Jockey && (Axis("MF LT") > 0.15f || Axis("MF Triggers") > 0.15f)) { UsingGamepad = true; return true; }
+        return Input.GetKey(KeyOf(b)) || (PadOf(b) != KeyCode.None && Input.GetKey(PadOf(b)));
+    }
+
+    // Оси, которых нет в Input Manager, бросают исключение — запоминаем и больше не спрашиваем
+    static readonly System.Collections.Generic.HashSet<string> missingAxes = new System.Collections.Generic.HashSet<string>();
+    static float Axis(string name)
+    {
+        if (missingAxes.Contains(name)) return 0f;
+        try { return Input.GetAxisRaw(name); }
+        catch (System.ArgumentException) { missingAxes.Add(name); return 0f; }
+    }
     public static bool Up(Btn b) => Input.GetKeyUp(KeyOf(b)) || (PadOf(b) != KeyCode.None && Input.GetKeyUp(PadOf(b)));
     public static Vector2 Move() => Vector2.ClampMagnitude(new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")), 1f);
-    public static Vector2 RightStick() => new Vector2((Input.GetKey(KeyCode.H) ? 1f : 0f) - (Input.GetKey(KeyCode.F) ? 1f : 0f),
-                                                     (Input.GetKey(KeyCode.T) ? 1f : 0f) - (Input.GetKey(KeyCode.G) ? 1f : 0f));
+    public static Vector2 RightStick()
+    {
+        Vector2 pad = new Vector2(Axis("MF RX"), -Axis("MF RY"));    // правый стик Xbox: 4-я и 5-я оси (Y инвертирована)
+        if (pad.magnitude > 0.2f) return pad;
+        return new Vector2((Input.GetKey(KeyCode.H) ? 1f : 0f) - (Input.GetKey(KeyCode.F) ? 1f : 0f),
+                           (Input.GetKey(KeyCode.T) ? 1f : 0f) - (Input.GetKey(KeyCode.G) ? 1f : 0f));
+    }
 
     static Vector2 RawNav() => Quantize(Input.GetAxisRaw("Horizontal"), -Input.GetAxisRaw("Vertical"));
 #endif

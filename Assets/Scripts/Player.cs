@@ -15,13 +15,17 @@ public class Player : MonoBehaviour
     [Header("Скорости, м/с")]
     public float aiSpeed = 5.5f;
     public float runSpeed = 5.8f;          // твой игрок
-    public float sprintSpeed = 8.8f;       // твой игрок со спринтом (RT) — заметно быстрее бега
+    public float sprintSpeed = 9f;         // твой игрок со спринтом (RT) — заметно быстрее бега
     public float keeperSpeed = 4f;
-    public float accel = 35f;
+    [Header("Инерция (как в FIFA): рывок с места, разгон, торможение, повороты по дуге")]
+    public float accel = 16f;              // ускорение с места, м/с² (к максимальной скорости падает)
+    public float braking = 24f;            // торможение, м/с²
+    public float turnRateSlow = 900f;      // скорость поворота шагом, °/с
+    public float turnRateFast = 230f;      // на полном спринте, °/с — разворот по дуге, а не на месте
 
     [Header("Выносливость (0…1)")]
-    public float staminaDrain = 0.12f;     // в секунду спринта
-    public float staminaRecover = 0.07f;   // в секунду без спринта
+    public float staminaDrain = 0.035f;    // в секунду спринта (полный запас — ~30 с непрерывного спринта)
+    public float staminaRecover = 0.05f;   // в секунду без спринта
 
     [Header("Мяч")]
     public float controlRadius = 1.1f;     // в этом радиусе мяч «прилипает» к игроку
@@ -104,7 +108,7 @@ public class Player : MonoBehaviour
     Ball Ball => mm.ball;
     Vector3 BallPos => new Vector3(mm.ball.Body.position.x, 0f, mm.ball.Body.position.z);
     Vector3 AttackDir => team == Team.Red ? Vector3.right : Vector3.left;
-    float SprintSpeedNow => Mathf.Lerp(runSpeed, sprintSpeed, Mathf.Clamp01(stamina / 0.25f));   // уставший не ускоряется
+    float SprintSpeedNow => Mathf.Lerp(runSpeed, sprintSpeed, Mathf.Clamp01(stamina / 0.15f));   // совсем уставший не ускоряется
     public static Team Opp(Team t) => t == Team.Red ? Team.Blue : Team.Red;
     static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
 
@@ -257,18 +261,48 @@ public class Player : MonoBehaviour
     void FixedUpdate()
     {
         Vector3 v = rb.linearVelocity;
-        Vector3 cur = Flat(v);
-        // На высокой скорости резко развернуться нельзя: при смене направления разгон слабее (инерция)
-        float turn = cur.sqrMagnitude > 1f && desiredVel.sqrMagnitude > 1f ? Vector3.Angle(cur, desiredVel) : 0f;
-        float a = Sliding || Tackling || Diving ? accel * 4f : (sprinting ? accel * 1.4f : accel) * Mathf.Lerp(1f, 0.45f, Mathf.Clamp01(turn / 150f) * Mathf.Clamp01(cur.magnitude / sprintSpeed));
-        Vector3 flat = Vector3.MoveTowards(cur, desiredVel, a * Time.fixedDeltaTime);
+        Vector3 flat = Sliding || Tackling || Diving
+            ? Vector3.MoveTowards(Flat(v), desiredVel, 140f * Time.fixedDeltaTime)   // рывки — мгновенно
+            : Locomotion(Flat(v), desiredVel, Time.fixedDeltaTime);
         rb.linearVelocity = new Vector3(flat.x, v.y, flat.z);
 
+        // Куда смотрит игрок: на бегу — туда, куда реально бежит (мяч у ноги идёт по дуге вместе с ним),
+        // стоя или на стандарте — по прицелу стика
         bool useAim = IsControlled || mm.IsTaker(this) || (role == Role.Keeper && HasBall) || skillTimer > 0f;
+        if (useAim && !mm.IsTaker(this) && skillTimer <= 0f && flat.magnitude > 1.5f) useAim = false;
         Vector3 face = Sliding ? slideDir : useAim ? aim : flat;
         if (!useAim && !Sliding && flat.sqrMagnitude < 1f) face = BallPos - Position;   // стоим — смотрим на мяч
         if (face.sqrMagnitude > 0.01f)
             rb.MoveRotation(Quaternion.Slerp(rb.rotation, Quaternion.LookRotation(face), 14f * Time.fixedDeltaTime));
+    }
+
+    /// <summary>
+    /// Модель движения с инерцией:
+    ///  • скорость и направление меняются раздельно;
+    ///  • ускорение максимально с места (рывок) и падает к максимальной скорости — до спринта ~1 с;
+    ///  • скорость поворота зависит от скорости: шагом — почти на месте, на спринте — по широкой дуге;
+    ///  • резкий разворот (> 100°) на скорости — сначала торможение «на опорной ноге»;
+    ///  • с мячом повороты чуть медленнее.
+    /// </summary>
+    Vector3 Locomotion(Vector3 cur, Vector3 want, float dt)
+    {
+        float speed = cur.magnitude;
+        float wantSpeed = want.magnitude;
+        Vector3 dir = speed > 0.2f ? cur / speed : wantSpeed > 0.01f ? want / wantSpeed : Facing;
+
+        if (wantSpeed > 0.01f)
+        {
+            Vector3 wantDir = want / wantSpeed;
+            float angle = Vector3.Angle(dir, wantDir);
+            float turnRate = Mathf.Lerp(turnRateSlow, turnRateFast, Mathf.Clamp01(speed / sprintSpeed)) * (HasBall ? 0.8f : 1f);
+            dir = Vector3.RotateTowards(dir, wantDir, turnRate * Mathf.Deg2Rad * dt, 0f);
+            if (angle > 100f && speed > 3f) wantSpeed = Mathf.Min(wantSpeed, speed * 0.4f);   // разворот — сначала тормозим
+        }
+
+        float top = Mathf.Max(sprintSpeed, 1f);
+        float a = wantSpeed > speed ? accel * (1f - 0.65f * Mathf.Clamp01(speed / top)) : braking;
+        speed = Mathf.MoveTowards(speed, wantSpeed, a * dt);
+        return dir * speed;
     }
 
     // ------------------------------------------------------------ твой игрок

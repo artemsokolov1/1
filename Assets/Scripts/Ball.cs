@@ -20,16 +20,16 @@ public class Ball : MonoBehaviour
     public float dragK = 0.012f;               // квадратичное сопротивление воздуха
     public float magnusK = 0.012f;             // сила Магнуса на единицу вращения
     public float spinDecay = 0.6f;             // затухание вращения в воздухе, 1/с (на земле — в 4 раза быстрее)
-    public float rollDecel = 3.5f;             // трение качения, м/с²
+    public float rollDecel = 2.2f;             // трение качения по газону, м/с² (мяч катится дальше — пасы «летят» по траве)
     public float maxSpeed = 34f;
     [Range(0f, 1f)] public float bounciness = 0.5f;
 
     [Header("Контроль мяча")]
     public float diameter = 0.28f;             // размер мяча, м (настоящий — 0.22; чуть крупнее, чтобы было видно)
-    public float holdDistance = 0.45f;         // мяч у самой ноги при обычном ведении
-    public float sprintHoldDistance = 0.75f;   // на спринте касания чуть длиннее — мяч легче отобрать
-    public float shieldHoldDistance = 0.5f;    // при укрывании мяч с дальней от соперника стороны
-    public float holdStiffness = 45f;          // насколько жёстко мяч «прилипает» к ноге при ведении
+    public float holdDistance = 0.34f;         // мяч ровно в ногах при обычном ведении
+    public float sprintHoldDistance = 0.55f;   // на спринте чуть впереди — мяч легче отобрать
+    public float shieldHoldDistance = 0.42f;   // при укрывании мяч с дальней от соперника стороны
+    public float holdStiffness = 70f;          // насколько жёстко мяч «прилипает» к ноге (ограничено 0.9/dt — без дрожи)
     public float trapSpeed = 18f;              // быстрее этого (относительно игрока) полевой мяч не остановит вовсе
     public float softTouchSpeed = 12f;         // до этой скорости приём чистый, выше — мяч отскакивает от ноги
     public float controlledTouchBonus = 3f;    // (для ИИ-партнёров без паса) приём прощается чуть больше
@@ -157,8 +157,9 @@ public class Ball : MonoBehaviour
         Vector3 dir = p.Shielding ? p.ShieldDir : p.Facing;
         float d = p.Shielding ? shieldHoldDistance : p.IsSprinting ? sprintHoldDistance : holdDistance;
         Vector3 hold = p.Position + dir * d;
-        Vector3 v = p.Velocity + Flat(hold - Body.position) * holdStiffness;
-        v = Vector3.ClampMagnitude(v, p.Velocity.magnitude + 12f);
+        float k = Mathf.Min(holdStiffness, 0.9f / Time.fixedDeltaTime);     // почти всё отставание — за один шаг физики
+        Vector3 v = p.Velocity + Flat(hold - Body.position) * k;
+        v = Vector3.ClampMagnitude(v, p.Velocity.magnitude + 15f);
         Body.linearVelocity = new Vector3(v.x, Mathf.Min(Body.linearVelocity.y, 0f), v.z);
         Body.angularVelocity = Vector3.Cross(Vector3.up, v) / Radius;
     }

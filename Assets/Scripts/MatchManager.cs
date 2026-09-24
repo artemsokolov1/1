@@ -101,7 +101,11 @@ public class MatchManager : MonoBehaviour
     float L => length * 0.5f;
     float W => width * 0.5f;
 
-    void Awake() => I = this;
+    void Awake()
+    {
+        I = this;
+        Time.fixedDeltaTime = 0.01f;   // физика 100 раз в секунду: мяч у ноги без рывков, точнее удары и отскоки
+    }
 
     // ------------------------------------------------------------ автозапуск
 
@@ -1099,8 +1103,19 @@ public class MatchManager : MonoBehaviour
     /// </summary>
     void CreateIndicators()
     {
-        if (marker == null) marker = Prim(PrimitiveType.Sphere, null, Vector3.zero, Vector3.one * 0.4f, Color.yellow).transform;
-        if (nextSwitch == null) nextSwitch = Prim(PrimitiveType.Cube, null, Vector3.zero, new Vector3(0.25f, 0.25f, 0.25f), new Color(0.3f, 0.85f, 1f)).transform;
+        if (marker == null) marker = NoShadow(Prim(PrimitiveType.Sphere, null, Vector3.zero, Vector3.one * 0.16f, Color.yellow)).transform;
+        if (nextSwitch == null) nextSwitch = NoShadow(Prim(PrimitiveType.Cube, null, Vector3.zero, Vector3.one * 0.13f, new Color(0.3f, 0.85f, 1f))).transform;
+    }
+
+    static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
+
+    /// <summary>Индикаторы не отбрасывают и не принимают тени.</summary>
+    static GameObject NoShadow(GameObject go)
+    {
+        var r = go.GetComponent<Renderer>();
+        r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        r.receiveShadows = false;
+        return go;
     }
 
     /// <summary>
@@ -1135,13 +1150,14 @@ public class MatchManager : MonoBehaviour
         if (marker == null || nextSwitch == null) CreateIndicators();
         bool show = InMatch && controlled != null && phase != Phase.Over;
         marker.gameObject.SetActive(show);
-        if (show) marker.position = controlled.Position + Vector3.up * 2.4f;
+        // Берём transform (он интерполируется между шагами физики), а не rigidbody — иначе маркер дрожит на бегу
+        if (show) marker.position = Flat(controlled.transform.position) + Vector3.up * 2.15f;
 
         Player next = show && !controlled.HasBall && !IsTaker(controlled) ? NextSwitchTarget() : null;
         nextSwitch.gameObject.SetActive(next != null);
         if (next != null)
         {
-            nextSwitch.position = next.Position + Vector3.up * 2.4f;
+            nextSwitch.position = Flat(next.transform.position) + Vector3.up * 2.15f;
             nextSwitch.rotation = Quaternion.Euler(45f, Time.time * 180f, 45f);
         }
     }
@@ -1342,7 +1358,7 @@ public class MatchManager : MonoBehaviour
             }
 
             // Имя над игроком, как в FIFA
-            Vector3 sp = cam.WorldToScreenPoint(controlled.Position + Vector3.up * 2.9f);
+            Vector3 sp = cam.WorldToScreenPoint(Flat(controlled.transform.position) + Vector3.up * 2.55f);
             if (sp.z > 0f)
             {
                 float sx = sp.x / UI.Scale, sy = (Screen.height - sp.y) / UI.Scale;
