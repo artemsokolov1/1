@@ -155,7 +155,7 @@ public class Ball : MonoBehaviour
     void ApplyControl(Player p)
     {
         Vector3 dir = p.Shielding ? p.ShieldDir : p.Facing;
-        float d = p.Shielding ? shieldHoldDistance : p.IsSprinting ? sprintHoldDistance : holdDistance;
+        float d = (p.Shielding ? shieldHoldDistance : p.IsSprinting ? sprintHoldDistance : holdDistance) + p.DribbleOffset;   // + касание в ритм шагов
         Vector3 hold = p.Position + dir * d;
         float k = Mathf.Min(holdStiffness, 0.9f / Time.fixedDeltaTime);     // почти всё отставание — за один шаг физики
         Vector3 v = p.Velocity + Flat(hold - Body.position) * k;

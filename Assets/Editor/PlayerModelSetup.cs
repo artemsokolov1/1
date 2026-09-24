@@ -10,9 +10,15 @@ using UnityEngine;
 ///  2) в файлах анимаций берёт дубль «mixamo.com», зацикливает его, запекает поворот и высоту корня в позу;
 ///  3) собирает аниматор Assets/Resources/Models/PlayerAnimator.controller: смесь Idle → Running по параметру Speed;
 ///  4) делает префаб Assets/Resources/Models/PlayerModel.prefab ростом ~1.85 м — его подхватывает MatchManager.
-/// Запускается сам при открытии проекта, если префаба ещё нет, или через меню «Mini Football → Настроить модель игрока».
-/// Имена файлов: персонаж — любой .fbx без слов idle/run в названии (например Character.fbx);
-/// анимации — по словам в названии: idle, run/running, sprint.
+///  5) анимации действий (необязательно) — по словам в названии файла; каждая становится состоянием аниматора
+///     с триггером того же имени (игра вызывает его в момент действия):
+///       Shot   — shot, shoot, kick, strike, penalty      Pass  — pass
+///       Header — header                                   Slide — slide, tackle
+///       Catch  — catch, save                              Dive  — dive, diving
+///       Fall   — fall, trip, knocked                      Throw — throw
+/// Запускается сам при открытии проекта, если префаба нет или в папке изменился набор файлов,
+/// а также через меню «Mini Football → Настроить модель игрока».
+/// Имена файлов: персонаж — .fbx без этих слов (например Character.fbx); ходьба/бег — idle, run/running, sprint.
 /// </summary>
 [InitializeOnLoad]
 static class PlayerModelSetup
@@ -22,16 +28,54 @@ static class PlayerModelSetup
     const string ControllerPath = OutFolder + "/PlayerAnimator.controller";
     const string PrefabPath = OutFolder + "/PlayerModel.prefab";
     const float TargetHeight = 1.85f;
+    const string SignaturePath = OutFolder + "/PlayerModel.files.txt";   // какие файлы были при последней сборке
     public const float RunThreshold = 5.5f;   // скорость (м/с), при которой анимация бега играет в своём темпе
+
+    struct ActionDef
+    {
+        public string trigger; public string[] keywords;
+        public ActionDef(string t, params string[] k) { trigger = t; keywords = k; }
+    }
+
+    // Порядок важен: «Goalkeeper Diving Save» — это Dive, а не Catch; «Slide Tackle» — Slide
+    static readonly ActionDef[] Actions =
+    {
+        new ActionDef("Dive", "dive", "diving"),
+        new ActionDef("Catch", "catch", "save"),
+        new ActionDef("Header", "header"),
+        new ActionDef("Slide", "slide", "tackle"),
+        new ActionDef("Pass", "pass"),
+        new ActionDef("Shot", "shot", "shoot", "kick", "strike", "penalty"),
+        new ActionDef("Fall", "fall", "trip", "knocked"),
+        new ActionDef("Throw", "throw"),
+    };
 
     static PlayerModelSetup() => EditorApplication.delayCall += AutoSetup;
 
     static void AutoSetup()
     {
         if (EditorApplication.isPlayingOrWillChangePlaymode) return;
-        if (!Directory.Exists(ModelFolder) || File.Exists(PrefabPath)) return;
-        if (FindCharacter() == null) return;
-        Setup();
+        if (!Directory.Exists(ModelFolder) || FindCharacter() == null) return;
+        bool upToDate = File.Exists(PrefabPath) && File.Exists(SignaturePath) && File.ReadAllText(SignaturePath) == Signature();
+        if (!upToDate) Setup();   // первый запуск или в папке появились/пропали файлы (например, новые анимации)
+    }
+
+    static string Signature()
+    {
+        var names = new List<string>();
+        foreach (string f in ModelFiles()) names.Add(Path.GetFileName(f));
+        names.Sort();
+        return string.Join("\n", names.ToArray());
+    }
+
+    /// <summary>Какому действию принадлежит файл (по словам в названии), или null.</summary>
+    static string ActionOf(string path)
+    {
+        string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        foreach (ActionDef a in Actions)
+            foreach (string k in a.keywords)
+                if (n.Contains(k)) return a.trigger;
+        return null;
     }
 
     [MenuItem("Mini Football/Настроить модель игрока")]
@@ -66,6 +110,40 @@ static class PlayerModelSetup
         if (runClip != null) tree.AddChild(runClip, RunThreshold);
         if (sprintClip != null) tree.AddChild(sprintClip, 8.5f);
 
+        // 5. Анимации действий: состояние + триггер; из любого состояния — по триггеру, обратно в бег — по окончании
+        AnimatorStateMachine sm = controller.layers[0].stateMachine;
+        AnimatorState locomotion = sm.defaultState;
+        var found = new List<string>();
+        var used = new HashSet<string>();
+        foreach (string file in ModelFiles())
+        {
+            string path = file.Replace('\\', '/');
+            string trigger = ActionOf(path);
+            if (trigger == null || used.Contains(trigger)) continue;
+            ConfigureImporter(path, trigger, false);
+            AnimationClip clip = LoadClip(path, trigger);
+            if (clip == null) continue;
+            used.Add(trigger);
+            found.Add(trigger);
+
+            controller.AddParameter(trigger, AnimatorControllerParameterType.Trigger);
+            AnimatorState state = sm.AddState(trigger);
+            state.motion = clip;
+            state.speed = trigger == "Slide" || trigger == "Fall" || trigger == "Dive" ? 1f : 1.4f;   // удары — чуть быстрее
+            AnimatorStateTransition go = sm.AddAnyStateTransition(state);
+            go.AddCondition(AnimatorConditionMode.If, 0f, trigger);
+            go.hasExitTime = false;
+            go.duration = 0.05f;
+            go.canTransitionToSelf = false;
+            if (locomotion != null)
+            {
+                AnimatorStateTransition back = state.AddTransition(locomotion);
+                back.hasExitTime = true;
+                back.exitTime = 0.85f;
+                back.duration = 0.15f;
+            }
+        }
+
         // 4. Префаб нужного роста
         var source = AssetDatabase.LoadAssetAtPath<GameObject>(character);
         var instance = (GameObject)PrefabUtility.InstantiatePrefab(source);
@@ -86,12 +164,13 @@ static class PlayerModelSetup
         AssetDatabase.DeleteAsset(PrefabPath);
         PrefabUtility.SaveAsPrefabAsset(instance, PrefabPath);
         Object.DestroyImmediate(instance);
+        File.WriteAllText(SignaturePath, Signature());
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
 
         Debug.Log($"Мини-футбол: модель игрока готова ({Path.GetFileName(character)}; " +
-                  $"idle: {(idleClip != null ? "да" : "нет")}, бег: {(runClip != null ? "да" : "нет")}, спринт: {(sprintClip != null ? "да" : "нет")}). " +
-                  "Нажми Play.");
+                  $"idle: {(idleClip != null ? "да" : "нет")}, бег: {(runClip != null ? "да" : "нет")}, спринт: {(sprintClip != null ? "да" : "нет")}; " +
+                  $"действия: {(found.Count > 0 ? string.Join(", ", found.ToArray()) : "нет")}). Нажми Play.");
     }
 
     static string[] ModelFiles() =>
@@ -100,7 +179,7 @@ static class PlayerModelSetup
     static bool IsAnimationFile(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
-        return n.Contains("idle") || n.Contains("run") || n.Contains("sprint");
+        return n.Contains("idle") || n.Contains("run") || n.Contains("sprint") || ActionOf(path) != null;
     }
 
     static string FindCharacter()
@@ -116,13 +195,14 @@ static class PlayerModelSetup
         {
             string n = Path.GetFileNameWithoutExtension(f).ToLowerInvariant();
             if (keyword == "run" && n.Contains("sprint")) continue;
+            if (ActionOf(f) != null) continue;   // «Soccer Running Kick» — это удар, а не бег
             if (n.Contains(keyword)) return f.Replace('\\', '/');
         }
         return null;
     }
 
-    /// <summary>Humanoid-риг; для анимаций — один зацикленный клип из дубля «mixamo.com».</summary>
-    static void ConfigureImporter(string path, string clipName)
+    /// <summary>Humanoid-риг; для анимаций — один клип из дубля «mixamo.com» (ходьба/бег — зациклены, действия — нет).</summary>
+    static void ConfigureImporter(string path, string clipName, bool loop = true)
     {
         var importer = AssetImporter.GetAtPath(path) as ModelImporter;
         if (importer == null) return;
@@ -150,12 +230,12 @@ static class PlayerModelSetup
         }
 
         take.name = clipName;
-        take.loopTime = true;
+        take.loopTime = loop;
         take.lockRootRotation = true;          // поворот корня — в позу (разворачивает игрока физика)
         take.keepOriginalOrientation = true;
         take.lockRootHeightY = true;           // высота корня — в позу
         take.keepOriginalPositionY = true;
-        take.lockRootPositionXZ = false;       // смещение не запекаем: без root motion бег идёт на месте, даже если скачан не «In Place»
+        take.lockRootPositionXZ = !loop;       // бег: не запекаем (без root motion он и так на месте); действия: запекаем — модель не «уезжает» с капсулы
         importer.clipAnimations = new[] { take };
         importer.SaveAndReimport();
     }

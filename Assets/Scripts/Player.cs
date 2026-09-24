@@ -70,6 +70,20 @@ public class Player : MonoBehaviour
     float diveTimer, diveCooldown, skillTimer, headerBuffer, openTimer;
     float shotSeenAt = -1f, afterPassRunUntil, slideCooldown;
     float slideElapsed, slideVisualTimer, fallTimer;
+
+    // Замах: удар/пас уходит не сразу, а через windupTimer — в это время мяч можно отобрать, и удар сорвётся
+    struct PendingKick { public Vector3 dir; public float power, lift, side, top; public Player receiver; }
+    PendingKick pending;
+    bool hasPending;
+    float windupTimer, nextWindup, followTimer;
+    string nextAnim, pendingAnim;
+    readonly System.Collections.Generic.HashSet<string> animTriggers = new System.Collections.Generic.HashSet<string>();
+    float actionAnimTimer;
+    bool hadBall;
+
+    // Касания при ведении и борьба корпусами
+    float dribblePhase, jostleTime;
+    [HideInInspector] public float DribbleOffset;   // насколько мяч «оттолкнут» вперёд в этот момент (касание в ритм шагов)
     Vector3 slideDir, diveDir, skillVel, openTarget;
     float passBuffer, shotBuffer, bufferedCharge;
     PassKind bufferedPass;
@@ -174,6 +188,7 @@ public class Player : MonoBehaviour
         charge = 0f; kickCooldown = 0f; lostTimer = 0f; passBuffer = 0f; shotBuffer = 0f; shotArmed = false;
         tackleTimer = 0f; slideTimer = 0f; recoverTimer = 0f; diveTimer = 0f; skillTimer = 0f; headerBuffer = 0f;
         slideVisualTimer = 0f; fallTimer = 0f;
+        hasPending = false; followTimer = 0f; DribbleOffset = 0f; jostleTime = 0f;
     }
 
     /// <summary>Подключить 3D-модель: капсула остаётся физикой, модель только показывает и анимирует.</summary>
@@ -181,6 +196,10 @@ public class Player : MonoBehaviour
     {
         model = m;
         anim = m.GetComponentInChildren<Animator>();
+        animTriggers.Clear();
+        if (anim != null && anim.runtimeAnimatorController != null)
+            foreach (AnimatorControllerParameter prm in anim.parameters)
+                if (prm.type == AnimatorControllerParameterType.Trigger) animTriggers.Add(prm.name);
     }
 
     /// <summary>
@@ -197,12 +216,15 @@ public class Player : MonoBehaviour
             // Полный бег в смеси уже с 2.5 м/с, дальше скорость воспроизведения = реальная скорость / скорость анимации.
             anim.SetFloat(SpeedHash, speed * (PlayerModelRunThreshold / 2.5f));
             anim.speed = speed > 2.5f ? Mathf.Clamp(speed / animRunSpeed, 1f, 2.5f) : 1f;
-            if (slideVisualTimer > 0f || fallTimer > 0f) anim.speed = 0.05f;   // в подкате/падении ноги не «бегут»
+            if (actionAnimTimer > 0f) anim.speed = 1f;                           // анимация действия — в своём темпе
+            else if (slideVisualTimer > 0f || fallTimer > 0f) anim.speed = 0.05f;  // в подкате/падении ноги не «бегут»
         }
         Quaternion rot = Quaternion.identity;
         Vector3 pos = new Vector3(0f, -1f, 0f);
         float rate = 18f;
-        if (slideVisualTimer > 0f)
+        if (slideVisualTimer > 0f && HasAnim("Slide")) { }          // есть анимация подката — наклон не нужен
+        else if (fallTimer > 0f && HasAnim("Fall")) { }
+        else if (slideVisualTimer > 0f)
         {
             // Подкат: ложимся на бок-спину ногами вперёд по ходу подката (поворот вокруг стоп), пока не встанем
             rot = Quaternion.Euler(-78f, 0f, 0f);
@@ -214,7 +236,17 @@ public class Player : MonoBehaviour
             rot = Quaternion.Euler(80f, 0f, 0f);                          // сбили — падает вперёд
             rate = 22f;
         }
-        else if (Diving)
+        else if (hasPending && !HasAnim(pendingAnim))
+        {
+            rot = Quaternion.Euler(-12f, 0f, 0f);                         // замах без анимации: корпус чуть назад
+            rate = 25f;
+        }
+        else if (followTimer > 0f && !HasAnim(pendingAnim))
+        {
+            rot = Quaternion.Euler(14f, 0f, 0f);                          // удар: корпус вперёд за мячом
+            rate = 25f;
+        }
+        else if (Diving && !HasAnim("Dive"))
         {
             float side = Vector3.Dot(diveDir, transform.right) >= 0f ? -1f : 1f;   // падаем в сторону прыжка
             rot = Quaternion.Euler(0f, 0f, 75f * side);
@@ -223,6 +255,16 @@ public class Player : MonoBehaviour
         float k = 1f - Mathf.Exp(-rate * Time.deltaTime);
         model.localRotation = Quaternion.Slerp(model.localRotation, rot, k);
         model.localPosition = Vector3.Lerp(model.localPosition, pos, k);
+    }
+
+    bool HasAnim(string trigger) => trigger != null && anim != null && animTriggers.Contains(trigger);
+
+    /// <summary>Запустить анимацию действия (если такая скачана): удар, пас, головой, подкат, ловля, прыжок, падение.</summary>
+    void PlayAction(string trigger)
+    {
+        if (!HasAnim(trigger)) return;
+        anim.SetTrigger(trigger);
+        actionAnimTimer = 0.7f;
     }
 
     public void OnLostBall() => lostTimer = 0.4f;     // после отбора нельзя мгновенно вернуть мяч
@@ -237,8 +279,10 @@ public class Player : MonoBehaviour
         kickCooldown -= dt; lostTimer -= dt; thinkTimer -= dt; openTimer -= dt;
         passBuffer -= dt; shotBuffer -= dt; headerBuffer -= dt;
         tackleTimer -= dt; tackleCooldown -= dt; recoverTimer -= dt; diveCooldown -= dt; slideCooldown -= dt;
-        slideVisualTimer -= dt; fallTimer -= dt;
+        slideVisualTimer -= dt; fallTimer -= dt; followTimer -= dt; actionAnimTimer -= dt;
         holdTimer = HasBall ? holdTimer + dt : 0f;
+        if (HasBall && !hadBall && role == Role.Keeper) PlayAction("Catch");   // вратарь поймал мяч
+        hadBall = HasBall;
 
         // Выносливость: спринт тратит, шаг восстанавливает
         stamina = sprinting && Velocity.magnitude > runSpeed * 0.9f
@@ -250,7 +294,21 @@ public class Player : MonoBehaviour
         if (mm.Stopped)
         {
             desiredVel = Vector3.zero; charge = 0f;
-            slideTimer = 0f; diveTimer = 0f; skillTimer = 0f;
+            slideTimer = 0f; diveTimer = 0f; skillTimer = 0f; hasPending = false;
+            return;
+        }
+
+        // Замах: пока идёт — игрок притормаживает; по окончании удар уходит, если мяч всё ещё у него
+        if (hasPending)
+        {
+            windupTimer -= dt;
+            desiredVel = Velocity * 0.45f;
+            if (windupTimer <= 0f)
+            {
+                hasPending = false;
+                if (CanKick) { DoKick(pending.dir, pending.power, pending.lift, pending.receiver, pending.side, pending.top); followTimer = 0.18f; }
+                else if (IsControlled) mm.Flash("ОТОБРАЛИ!");        // мяч отобрали во время замаха — удар сорвался
+            }
             return;
         }
 
@@ -285,6 +343,9 @@ public class Player : MonoBehaviour
             ? Vector3.MoveTowards(Flat(v), desiredVel, 140f * Time.fixedDeltaTime)   // рывки — мгновенно
             : Locomotion(Flat(v), desiredVel, Time.fixedDeltaTime);
         rb.linearVelocity = new Vector3(flat.x, v.y, flat.z);
+
+        UpdateDribbleTouch(flat.magnitude, Time.fixedDeltaTime);
+        if (!Sliding && !Diving && role == Role.Field && !mm.Stopped) Jostle(Time.fixedDeltaTime);
 
         // Куда смотрит игрок: на бегу — туда, куда реально бежит (мяч у ноги идёт по дуге вместе с ним),
         // стоя или на стандарте — по прицелу стика
@@ -322,6 +383,49 @@ public class Player : MonoBehaviour
         float a = wantSpeed > speed ? accel * (1f - 0.3f * Mathf.Clamp01(speed / top)) : braking;
         speed = Mathf.MoveTowards(speed, wantSpeed, a * dt);
         return dir * speed;
+    }
+
+    /// <summary>
+    /// Касания при ведении: мяч не «приклеен» намертво — на бегу игрок подталкивает его в ритм шагов
+    /// (раз в ~2.4 м пути). Шагом касаний нет, на бегу — чуть-чуть, на спринте — дальше (в этот момент мяч легче отобрать).
+    /// </summary>
+    void UpdateDribbleTouch(float speed, float dt)
+    {
+        if (!HasBall || Shielding || speed < runSpeed * 0.6f) { DribbleOffset = Mathf.MoveTowards(DribbleOffset, 0f, dt); dribblePhase = 0f; return; }
+        float amp = speed > runSpeed + 0.4f ? 0.32f : 0.12f;
+        dribblePhase += speed * dt / 2.4f;
+        DribbleOffset = amp * Mathf.Sin(Mathf.Repeat(dribblePhase, 1f) * Mathf.PI);   // толчок вперёд и мяч снова у ноги
+    }
+
+    /// <summary>Сила в борьбе корпусами: укрывающий мяч и быстрее бегущий — сильнее.</summary>
+    public float Strength => 1f + (Shielding ? 0.8f : 0f) + (HasBall ? 0.2f : 0f) + 0.4f * Mathf.Clamp01(Velocity.magnitude / sprintSpeed);
+
+    /// <summary>
+    /// Борьба корпусами: соперник вплотную (≤ 0.9 м) — оба толкаются, более слабого отжимает в сторону.
+    /// Если соперник долго толкается с владельцем мяча, который не укрывает мяч, — мяч может выскочить.
+    /// </summary>
+    void Jostle(float dt)
+    {
+        bool contact = false;
+        foreach (var o in mm.players)
+        {
+            if (o.team == team || o.role == Role.Keeper) continue;
+            Vector3 d = Position - o.Position;
+            float dist = d.magnitude;
+            if (dist > 0.9f || dist < 0.01f) continue;
+            contact = true;
+            float share = o.Strength / (Strength + o.Strength);                 // чем соперник сильнее, тем сильнее отжимает меня
+            float push = Mathf.Clamp01((0.9f - dist) / 0.3f) * 7f * share;       // м/с² — боковое отталкивание
+            rb.linearVelocity += d / dist * push * dt;
+        }
+        if (!contact || !HasBall || Shielding) { jostleTime = 0f; return; }
+        jostleTime += dt;
+        if (jostleTime > 0.6f)
+        {
+            jostleTime = 0f;
+            if (Random.value < 0.3f)                                              // мяч выскочил в борьбе
+                DoKick(Facing + new Vector3(Random.Range(-0.8f, 0.8f), 0f, Random.Range(-0.8f, 0.8f)), 3.5f, 0.2f, null, 0f, 0f);
+        }
     }
 
     // ------------------------------------------------------------ твой игрок
@@ -378,7 +482,7 @@ public class Player : MonoBehaviour
         // A — пас по земле: держишь — набираешь силу, отпускаешь — пас (с RB — прострел).
         // Даже короткое нажатие доводит мяч до адресата; сила делает пас быстрее и позволяет отдать дальнему партнёру.
         if (GameInput.Down(Btn.Pass)) { groundArmed = true; lobArmed = false; throughArmed = false; passCharge = 0f; headerBuffer = 0.3f; headerShot = false; }
-        if (groundArmed && GameInput.Held(Btn.Pass)) passCharge = Mathf.Min(1f, passCharge + Time.deltaTime / passChargeTime);
+        if (groundArmed && GameInput.Held(Btn.Pass)) passCharge = FillCharge(passCharge, passChargeTime);
         if (groundArmed && GameInput.Up(Btn.Pass))
         {
             passBuffer = 0.3f; bufferedPass = modifier ? PassKind.Driven : PassKind.Ground; bufferedPassPower = passCharge;
@@ -389,7 +493,7 @@ public class Player : MonoBehaviour
         if (GameInput.Down(Btn.Lob)) { lobArmed = true; throughArmed = false; groundArmed = false; passCharge = 0f; }
         if (GameInput.Down(Btn.Through)) { throughArmed = true; lobArmed = false; groundArmed = false; passCharge = 0f; throughLofted = modifier; }
         if (lobArmed && GameInput.Held(Btn.Lob) || throughArmed && GameInput.Held(Btn.Through))
-            passCharge = Mathf.Min(1f, passCharge + Time.deltaTime / passChargeTime);
+            passCharge = FillCharge(passCharge, passChargeTime);
         if (lobArmed && GameInput.Up(Btn.Lob))
         {
             passBuffer = 0.3f; bufferedPass = PassKind.Lob; bufferedPassPower = passCharge;
@@ -403,7 +507,7 @@ public class Player : MonoBehaviour
 
         // B — удар (держать — сильнее; с RB — закрученный). У вратаря — выбивание.
         if (GameInput.Down(Btn.Shoot)) { shotArmed = true; headerBuffer = 0.3f; headerShot = true; }
-        if (shotArmed && GameInput.Held(Btn.Shoot)) charge = Mathf.Min(1f, charge + Time.deltaTime / chargeTime);
+        if (shotArmed && GameInput.Held(Btn.Shoot)) charge = FillCharge(charge, chargeTime);
         if (shotArmed && GameInput.Up(Btn.Shoot))
         {
             shotBuffer = 0.25f; bufferedCharge = charge; bufferedFinesse = modifier;
@@ -421,24 +525,49 @@ public class Player : MonoBehaviour
         if (passBuffer > 0f && CanKick)
         {
             passBuffer = 0f;
-            bool ok;
-            switch (bufferedPass)
+            PassKind kind = bufferedPass;
+            float pw = bufferedPassPower;
+            bool lofted = kind == PassKind.Lob || kind == PassKind.LobThrough;
+            // Замах: пас 0.1–0.16 с, навес 0.18–0.26 с — чем сильнее, тем дольше
+            float windup = (lofted ? 0.18f : 0.1f) + 0.08f * Mathf.Max(pw, 0f);
+            WithWindup(windup, role == Role.Keeper && lofted ? "Throw" : "Pass", () =>
             {
-                case PassKind.Lob: ok = TryLob(aim, false, bufferedPassPower); break;
-                case PassKind.LobThrough: ok = TryLob(aim, true, bufferedPassPower); break;
-                case PassKind.Through: ok = TryThrough(aim, bufferedPassPower) || TryPass(aim, 70f, false); break;
-                case PassKind.Driven: ok = TryPass(aim, 70f, true, bufferedPassPower); break;
-                default: ok = TryPass(aim, 70f, false, bufferedPassPower); break;
-            }
-            if (!ok && (taker || role == Role.Keeper)) Kick(aim, 12f, 0.3f, null);   // на стандарте не застреваем
+                bool ok;
+                switch (kind)
+                {
+                    case PassKind.Lob: ok = TryLob(aim, false, pw); break;
+                    case PassKind.LobThrough: ok = TryLob(aim, true, pw); break;
+                    case PassKind.Through: ok = TryThrough(aim, pw) || TryPass(aim, 70f, false); break;
+                    case PassKind.Driven: ok = TryPass(aim, 70f, true, pw); break;
+                    default: ok = TryPass(aim, 70f, false, pw); break;
+                }
+                if (!ok && (taker || role == Role.Keeper)) { Kick(aim, 12f, 0.3f, null); ok = true; }   // на стандарте не застреваем
+                return ok;
+            });
         }
         if (shotBuffer > 0f && CanKick)
         {
             shotBuffer = 0f;
-            if (role == Role.Keeper) DropKick(aim, bufferedCharge);
-            else Shoot(aim, bufferedCharge, bufferedFinesse);
+            float c = bufferedCharge;
+            bool fin = bufferedFinesse;
+            // Замах удара: 0.12 с на лёгкий, до 0.3 с на удар в полную силу; закрученный — чуть дольше
+            float windup = 0.12f + 0.18f * PowerCurve(c) + (fin ? 0.05f : 0f);
+            if (role == Role.Keeper) WithWindup(0.25f, "Shot", () => { DropKick(aim, c); return true; });
+            else WithWindup(windup, "Shot", () => { Shoot(aim, c, fin); return true; });
         }
     }
+
+    /// <summary>
+    /// Шкала силы заполняется неравномерно: быстро в начале и всё медленнее к концу (как в FIFA) —
+    /// лёгкое нажатие даёт аккуратный удар, а «дожать» до максимума нужно постараться.
+    /// </summary>
+    float FillCharge(float c, float time) => Mathf.Min(1f, c + Time.deltaTime / time * (1.5f - c));
+
+    /// <summary>
+    /// Кривая силы: эффект растёт медленнее шкалы (степень 1.6) — половина шкалы ≈ треть мощности,
+    /// по-настоящему сильный удар только ближе к полной шкале.
+    /// </summary>
+    static float PowerCurve(float c) => Mathf.Pow(Mathf.Clamp01(c), 1.6f);
 
     /// <summary>Вратарь с мячом в руках не выходит за пределы штрафной.</summary>
     Vector3 KeepInsideBox(Vector3 vel)
@@ -454,7 +583,8 @@ public class Player : MonoBehaviour
     void DropKick(Vector3 dir, float power01)
     {
         if (!CanKick) return;
-        Kick(dir, Mathf.Lerp(16f, 26f, power01), Mathf.Lerp(6f, 10f, power01), null, 0f, 0.15f);
+        float e = PowerCurve(power01);
+        Kick(dir, Mathf.Lerp(16f, 26f, e), Mathf.Lerp(6f, 10f, e), null, 0f, 0.15f);
     }
 
     /// <summary>
@@ -603,13 +733,15 @@ public class Player : MonoBehaviour
         {
             float spread = mm.goalWidth * 0.5f - 0.5f;
             Vector3 aimPt = goal + Vector3.forward * Random.Range(-spread, spread);
-            Shoot(aimPt - BallPos, Random.Range(0.45f, 0.9f), Random.value < 0.3f);
+            float c = Random.Range(0.6f, 1f);
+            bool fin = Random.value < 0.3f;
+            WithWindup(0.14f + 0.14f * c, "Shot", () => { Shoot(aimPt - BallPos, c, fin); return true; });
             return;
         }
         if (dOpp < 2.2f || Random.value < 0.1f)
         {
-            if (Random.value < 0.25f && TryThrough(toGoal)) return;
-            TryPass(toGoal, 110f, false);
+            if (Random.value < 0.25f && WithWindup(0.12f, "Pass", () => TryThrough(toGoal))) return;
+            WithWindup(0.1f, "Pass", () => TryPass(toGoal, 110f, false));
         }
     }
 
@@ -635,8 +767,13 @@ public class Player : MonoBehaviour
         {
             desiredVel = Vector3.zero;
             aim = fieldDir;
-            if (holdTimer > 0.6f && !TryPass(fieldDir, 100f, false))
-                Kick(new Vector3(inField, 0f, Random.Range(-0.6f, 0.6f)), Random.Range(16f, 21f), 3f, null);
+            if (holdTimer > 0.6f)
+                WithWindup(0.22f, "Throw", () =>
+                {
+                    if (TryPass(fieldDir, 100f, false)) return true;
+                    Kick(new Vector3(inField, 0f, Random.Range(-0.6f, 0.6f)), Random.Range(16f, 21f), 3f, null);
+                    return true;
+                });
             return;
         }
 
@@ -669,6 +806,7 @@ public class Player : MonoBehaviour
                 {
                     diveDir = new Vector3(0f, 0f, Mathf.Sign(need));
                     diveTimer = diveTime;
+                    PlayAction("Dive");
                     return;
                 }
             }
@@ -709,21 +847,30 @@ public class Player : MonoBehaviour
         switch (mm.SetPieceKind)
         {
             case SetPieceType.Penalty:
-                Shoot(goal + Vector3.forward * (Random.value < 0.5f ? -half : half) - BallPos, Random.Range(0.55f, 0.85f), false);
+            {
+                Vector3 pen = goal + Vector3.forward * (Random.value < 0.5f ? -half : half) - BallPos;
+                float c = Random.Range(0.7f, 0.95f);
+                WithWindup(0.3f, "Shot", () => { Shoot(pen, c, false); return true; });
                 return;
+            }
             case SetPieceType.FreeKick:
                 if (Vector3.Distance(BallPos, goal) < 16f)
                 {
-                    Shoot(goal + Vector3.forward * Random.Range(-half, half) - BallPos, Random.Range(0.5f, 0.8f), true);
+                    Vector3 fk = goal + Vector3.forward * Random.Range(-half, half) - BallPos;
+                    float c = Random.Range(0.65f, 0.9f);
+                    WithWindup(0.3f, "Shot", () => { Shoot(fk, c, true); return true; });
                     return;
                 }
                 break;
             case SetPieceType.Corner:
-                if (TryLob(toGoal, false)) return;          // угловой — навес в штрафную
+                if (WithWindup(0.22f, "Pass", () => TryLob(toGoal, false))) return;   // угловой — навес в штрафную
                 break;
         }
-        if (!TryPass(toGoal, 180f, false))
-            Kick(toGoal, 16f, 2f, null);
+        WithWindup(0.15f, "Pass", () =>
+        {
+            if (!TryPass(toGoal, 180f, false)) Kick(toGoal, 16f, 2f, null);
+            return true;
+        });
     }
 
     // ------------------------------------------------------------ движение
@@ -815,6 +962,8 @@ public class Player : MonoBehaviour
         slideTimer = slideTime;
         slideElapsed = 0f;
         slideVisualTimer = slideTime + slideRecover;   // модель лежит весь подкат и пока встаёт
+        hasPending = false;                            // подкат отменяет замах
+        PlayAction("Slide");
         slideCooldown = slideTime + slideRecover + 0.15f;   // своя перезарядка: сразу после вставания можно снова
     }
 
@@ -863,6 +1012,8 @@ public class Player : MonoBehaviour
         recoverTimer = 0.8f;
         fallTimer = 0.9f;
         slideTimer = 0f;
+        hasPending = false;                            // сбили — удар/пас сорвался
+        PlayAction("Fall");
     }
 
     // ------------------------------------------------------------ удары и пасы
@@ -877,6 +1028,7 @@ public class Player : MonoBehaviour
     /// <summary>Игра головой: удар в створ (если ворота рядом) или скидка/вынос в направлении.</summary>
     void Header(bool shot, Vector3 dir)
     {
+        nextAnim = "Header";   // удар головой — без замаха (мяч пролетает быстро), но с анимацией
         Vector3 goal = mm.GoalOf(Opp(team));
         Vector3 toGoal = goal - BallPos;
         if (shot && toGoal.magnitude < 16f && Vector3.Angle(dir, toGoal) < 60f)
@@ -916,8 +1068,11 @@ public class Player : MonoBehaviour
         Vector3 shot = target - BallPos;
         float dist = shot.magnitude;
 
+        float charge01 = power01;
+        power01 = PowerCurve(power01);                     // нелинейная сила: мощь только ближе к полной шкале
         float power = finesse ? Mathf.Lerp(shotMin, shotMax * 0.8f, power01) : Mathf.Lerp(shotMin, shotMax, power01);
         float lift = finesse ? Mathf.Lerp(1.5f, 4f, power01) : Mathf.Lerp(0.5f, 4.5f, power01);
+        if (charge01 > 0.95f) lift += 0.8f;                // «перебор» шкалы — мяч уходит заметно выше
 
         mm.NearestOpponent(this, out float dOpp);
         float err = 1.5f + 6f * power01 * power01
@@ -956,7 +1111,7 @@ public class Player : MonoBehaviour
         if (mate == null) return false;
 
         float arrive = driven ? drivenArriveSpeed : passArriveSpeed;
-        if (power01 > 0f) arrive = Mathf.Lerp(arrive, arrive + 7f, power01);   // сильнее — быстрее доходит
+        if (power01 > 0f) arrive = Mathf.Lerp(arrive, arrive + 7f, PowerCurve(power01));   // сильнее — быстрее доходит
         Vector3 target = mate.Position;
         float power = arrive;
         for (int i = 0; i < 2; i++)
@@ -1046,7 +1201,41 @@ public class Player : MonoBehaviour
         return true;
     }
 
+    /// <summary>
+    /// Удар по мячу. Если перед вызовом задан замах (WithWindup) — удар уходит через это время, иначе сразу
+    /// (финты, выбивание в подкате, отбор, удар головой).
+    /// </summary>
     void Kick(Vector3 dir, float power, float lift, Player receiver, float side = 0f, float top = 0f)
+    {
+        string animName = nextAnim;
+        nextAnim = null;
+        if (nextWindup > 0f)
+        {
+            pending = new PendingKick { dir = dir, power = power, lift = lift, receiver = receiver, side = side, top = top };
+            hasPending = true;
+            windupTimer = nextWindup;
+            pendingAnim = animName;
+            nextWindup = 0f;
+            passBuffer = 0f; shotBuffer = 0f;
+            PlayAction(animName);          // анимация стартует сейчас — касание мяча придётся примерно на конец замаха
+            return;
+        }
+        PlayAction(animName);
+        DoKick(dir, power, lift, receiver, side, top);
+    }
+
+    /// <summary>Выполнить action с замахом: Kick внутри него будет отложен на time секунд.</summary>
+    bool WithWindup(float time, string animTrigger, System.Func<bool> action)
+    {
+        nextWindup = time;
+        nextAnim = animTrigger;
+        bool ok = action();
+        nextWindup = 0f;                   // если action так и не ударил — замах не «протекает» в следующий удар
+        nextAnim = null;
+        return ok;
+    }
+
+    void DoKick(Vector3 dir, float power, float lift, Player receiver, float side, float top)
     {
         Ball.Kick(dir, power, lift, this, side, top);
         kickCooldown = 0.3f;   // не «подбираем» и не блокируем свой же удар
