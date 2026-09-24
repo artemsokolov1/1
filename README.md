@@ -36,6 +36,7 @@ Unity сама берёт подходящую для твоего редакт�
 | `Assets/Scripts/Profile.cs` | сохранения (монеты, жетоны, статистика, покупки, прокачка, настройки, испытания) и справочники |
 | `Assets/Editor/MiniFootballSetup.cs` | при первом открытии создаёт и открывает сцену `Main.unity`, добавляет её в Build Settings |
 | `Assets/Editor/Setup/InputSystemInstaller.cs` | ставит пакет Input System подходящей версии, если его нет |
+| `Assets/Resources/Fonts/` | шрифты интерфейса с кириллицей: Russo One и PT Sans Narrow (SIL Open Font License, тексты лицензий рядом) |
 | `*.asmdef` | сборки: игра подключает Input System, только если пакет установлен, — поэтому без него нет ошибок компиляции |
 
 ## Сборка сцены вручную (если захочется)

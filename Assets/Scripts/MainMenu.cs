@@ -2,7 +2,7 @@ using System.Globalization;
 using UnityEngine;
 
 /// <summary>
-/// Общие инструменты интерфейса (IMGUI): масштаб под 1080p, шрифты ОС с кириллицей, цвета, прямоугольники, текст.
+/// Общие инструменты интерфейса (IMGUI): масштаб под 1080p, шрифты с кириллицей, цвета, прямоугольники, текст.
 /// </summary>
 public static class UI
 {
@@ -20,12 +20,14 @@ public static class UI
     static Texture2D gradient;
     static GUIStyle label;
 
-    // Шрифты берём из системы: Impact/Bahnschrift есть в Windows и поддерживают кириллицу
+    // Шрифты лежат в проекте (Assets/Resources/Fonts, лицензия SIL OFL, с кириллицей):
+    // заголовки — Russo One, текст — PT Sans Narrow. Шрифт ОС — только запасной вариант.
     public static Font Head
     {
         get
         {
-            if (head == null) head = Font.CreateDynamicFontFromOSFont(new[] { "Impact", "Bahnschrift SemiBold Condensed", "Bahnschrift", "Arial Black", "Arial" }, 64);
+            if (head == null) head = Resources.Load<Font>("Fonts/RussoOne-Regular");
+            if (head == null) head = Font.CreateDynamicFontFromOSFont(new[] { "Impact", "Arial Black", "Arial" }, 64);
             return head;
         }
     }
@@ -33,7 +35,8 @@ public static class UI
     {
         get
         {
-            if (body == null) body = Font.CreateDynamicFontFromOSFont(new[] { "Bahnschrift", "Segoe UI", "Tahoma", "Arial" }, 32);
+            if (body == null) body = Resources.Load<Font>("Fonts/PT_Sans-Narrow-Web-Bold");
+            if (body == null) body = Font.CreateDynamicFontFromOSFont(new[] { "Bahnschrift", "Segoe UI", "Arial" }, 32);
             return body;
         }
     }
