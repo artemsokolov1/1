@@ -918,6 +918,7 @@ public class Player : MonoBehaviour
                      + (team == MatchManager.HumanTeam ? 0.05f : 0f);
         if (Random.value < chance)
         {
+            GameAudio.Thud(false);
             if (Random.value < 0.7f) Ball.ForceOwner(this);
             else Kick((BallPos - owner.Position).normalized + Random.insideUnitSphere * 0.5f, 6f, 0.3f, null);  // выбил
             if (IsControlled) mm.Flash("ОТБОР!");
@@ -942,7 +943,6 @@ public class Player : MonoBehaviour
         slideCooldown = slideTime + slideRecover + 0.15f;   // своя перезарядка: сразу после вставания можно снова
     }
 
-    /// <summary>Подкат: едем по инерции. Сначала мяч — чисто выбили; сначала соперник (обычно сзади) — фол.</summary>
     /// <summary>
     /// Подкат: едем по газону. Если первым достал мяч — чисто выбил его. Если первым врезался в соперника:
     /// контакт засчитывается только после начала подката (0.08 с), вплотную (≤ 0.6 м) и если соперник впереди по ходу
@@ -984,6 +984,7 @@ public class Player : MonoBehaviour
     /// <summary>Сбили подкатом — падает и секунду не участвует в игре.</summary>
     public void Trip()
     {
+        GameAudio.Thud(true);
         recoverTimer = 0.8f;
         fallTimer = 0.9f;
         slideTimer = 0f;
@@ -1204,6 +1205,7 @@ public class Player : MonoBehaviour
     void DoKick(Vector3 dir, float power, float lift, Player receiver, float side, float top)
     {
         Ball.Kick(dir, power, lift, this, side, top);
+        GameAudio.Kick(power);
         kickCooldown = 0.3f;   // не «подбираем» и не блокируем свой же удар
         aim = Flat(dir).normalized;
         mm.OnKick(this, receiver, lift > 3f);

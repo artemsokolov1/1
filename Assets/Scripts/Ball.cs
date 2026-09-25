@@ -197,7 +197,9 @@ public class Ball : MonoBehaviour
         sideSpin = topSpin = 0f;
         lastTouch = k;
         k.OnParry();
+        MatchManager.I.OnSave(k);
         MatchManager.I.OnLooseBall();
+        GameAudio.Kick(v.magnitude * 0.5f);
         MatchManager.I.Shake(0.12f);
         MatchManager.I.Flash("СЕЙВ!");
     }
@@ -319,15 +321,22 @@ public class Ball : MonoBehaviour
         if (MatchManager.I != null) MatchManager.I.OnBallTrigger(other);
     }
 
-    // Удар в штангу/перекладину — встряска камеры
+    // Удар в штангу/перекладину — звон и встряска камеры; остальное (газон, сетка) — глухой отскок
     void OnCollisionEnter(Collision c)
     {
-        if (MatchManager.I != null && c.collider.name == "Post" && c.relativeVelocity.magnitude > 8f)
+        float hit = c.relativeVelocity.magnitude;
+        if (c.collider.name == "Post")
         {
-            MatchManager.I.Shake(0.3f);
-            MatchManager.I.Flash("ШТАНГА!");
-            MatchManager.I.OnLooseBall();
+            if (hit > 3f) GameAudio.Post();
+            if (MatchManager.I != null && hit > 8f)
+            {
+                MatchManager.I.Shake(0.3f);
+                MatchManager.I.Flash("ШТАНГА!");
+                MatchManager.I.OnLooseBall();
+                GameAudio.CrowdOh();
+            }
         }
+        else GameAudio.Bounce(hit);
     }
 
     static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);

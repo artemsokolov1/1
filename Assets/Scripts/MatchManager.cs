@@ -9,6 +9,7 @@ public class MatchResult
     public string title, score;
     public bool good;
     public List<string> lines = new List<string>();
+    public MatchStats stats;                          // null на тренировке
 }
 
 /// <summary>
@@ -55,6 +56,8 @@ public class MatchManager : MonoBehaviour
     public const Team HumanTeam = Team.Red;
 
     public MatchResult LastResult { get; set; }       // показывается в меню после матча
+    public MatchStats Stats { get; private set; } = new MatchStats();   // статистика текущего матча
+    public bool IsPractice => practiceIndex >= 0;
     public bool InMenu => app == AppState.Menu;
     public bool Paused => paused;
     public bool InMatch => app == AppState.Match;
@@ -67,8 +70,15 @@ public class MatchManager : MonoBehaviour
     float phaseTimer, timeLeft, passTimer, resultTimer;
     float keeperRushUntil, teammatePressUntil;
     int scoreRed, scoreBlue;
-    string banner;
+    string banner, bannerSub;
     int practiceIndex = -1;
+    float matchDuration;
+
+    // Для статистики: чей пас в пути, чей удар летит, кто отдал последний точный пас (голевая передача)
+    Player pendingPass, shotBy, assistFrom, assistTo;
+    float shotTime;
+    bool shotOnTarget, shotSaved;
+    Team possTeam = HumanTeam;
 
     SetPieceType spType, nextType;
     Team spTeam, nextTeam;
@@ -150,6 +160,7 @@ public class MatchManager : MonoBehaviour
     {
         if (cam == null) cam = Camera.main;
         if (GetComponent<MainMenu>() == null) gameObject.AddComponent<MainMenu>();
+        if (GetComponent<GameAudio>() == null) gameObject.AddComponent<GameAudio>();
         BuildArena();
         CreateIndicators();
         EnterMenu();
@@ -188,6 +199,10 @@ public class MatchManager : MonoBehaviour
         scoreRed = scoreBlue = 0;
         timeLeft = practiceIndex >= 0 ? Catalog.Practices[practiceIndex].time
                                       : Catalog.MatchLengths[Profile.Current.matchLength];
+        matchDuration = timeLeft;
+        Stats = new MatchStats();
+        pendingPass = shotBy = assistFrom = assistTo = null;
+        possTeam = HumanTeam;
         banner = null;
         LastResult = null;
         BeginSetPiece(SetPieceType.Kickoff, HumanTeam, Vector3.zero);
@@ -250,6 +265,8 @@ public class MatchManager : MonoBehaviour
             case Phase.Play:
                 timeLeft -= Time.deltaTime;
                 if (timeLeft <= 0f) { EndMatch(); break; }
+                if (ball.Owner != null) possTeam = ball.Owner.team;       // ничей мяч — владение у последней владевшей команды
+                Stats.possession[(int)possTeam] += Time.deltaTime;
                 CheckOut();
                 break;
 
@@ -419,8 +436,11 @@ public class MatchManager : MonoBehaviour
                 StopForSetPiece(SetPieceType.Corner, Player.Opp(defending),
                                 new Vector3(side * (L - 0.3f), 0f, Mathf.Sign(b.z) * (W - 0.3f)), outPause, "Угловой");
             else                                             // атакующие → удар от ворот
+            {
+                if (shotBy != null && shotBy.team != defending && Time.time - shotTime < 3f) GameAudio.CrowdOh();   // удар мимо
                 StopForSetPiece(SetPieceType.GoalKick, defending,
                                 new Vector3(side * (L - 1.5f), 0f, 0f), outPause, "От ворот");
+            }
         }
     }
 
@@ -429,10 +449,15 @@ public class MatchManager : MonoBehaviour
     {
         if (!InMatch || phase != Phase.Play) return;
         Team conceded;
-        if (c == goalLeft) { scoreBlue++; conceded = Team.Red; banner = "ГОЛ! " + Catalog.OpponentClub; }
-        else if (c == goalRight) { scoreRed++; conceded = Team.Blue; banner = "ГОЛ! " + Profile.Current.clubName; }
+        if (c == goalLeft) { scoreBlue++; conceded = Team.Red; }
+        else if (c == goalRight) { scoreRed++; conceded = Team.Blue; }
         else return;
+        GoalEvent g = RecordGoal(Player.Opp(conceded));
+        banner = g.own ? "ГОЛ! Автогол" : "ГОЛ! " + g.scorer;
+        bannerSub = (g.own ? g.scorer + " · " : g.assist != null ? "Пас: " + g.assist + " · " : "") + TeamName(g.team);
         celebrant = ball.lastTouch;
+        GameAudio.Net();
+        GameAudio.CrowdRoar(g.team == HumanTeam);
         Shake(0.2f);
 
         // Тренировка: набрал нужное число голов — сразу итог
@@ -446,10 +471,12 @@ public class MatchManager : MonoBehaviour
     void StopForSetPiece(SetPieceType type, Team team, Vector3 spot, float pause, string title)
     {
         phase = Phase.Stopped;
+        pendingPass = shotBy = assistFrom = assistTo = null;   // мяч вне игры — пас не дошёл, цепочка паса и удара обрывается
+        if (type == SetPieceType.Corner) Stats.corners[(int)team]++;
         phaseTimer = pause;
         nextType = type; nextTeam = team; nextSpot = spot;
         passReceiver = null;
-        if (title != null) banner = $"{title}: {TeamName(team)}";
+        if (title != null) { banner = $"{title}: {TeamName(team)}"; bannerSub = null; }
     }
 
     public static string SetPieceName(SetPieceType t)
@@ -469,7 +496,8 @@ public class MatchManager : MonoBehaviour
     {
         phase = Phase.SetPiece;
         phaseTimer = 0f;
-        banner = null;
+        banner = bannerSub = null;
+        if (type == SetPieceType.Kickoff) GameAudio.Whistle(0);
         passReceiver = null;
         celebrant = null;
         runner = null;
@@ -551,13 +579,15 @@ public class MatchManager : MonoBehaviour
         passReceiver = null;
         LastResult = GiveRewards();
         banner = LastResult.title + "  " + LastResult.score;
+        bannerSub = null;
+        GameAudio.Whistle(2);
     }
 
     /// <summary>Награды и статистика. Всё сохраняется в профиль.</summary>
     MatchResult GiveRewards()
     {
         var p = Profile.Current;
-        var r = new MatchResult { score = $"{scoreRed} : {scoreBlue}" };
+        var r = new MatchResult { score = $"{scoreRed} : {scoreBlue}", stats = practiceIndex >= 0 ? null : Stats };
 
         if (practiceIndex >= 0)
         {
@@ -605,6 +635,7 @@ public class MatchManager : MonoBehaviour
         if (phase == Phase.SetPiece) { phase = Phase.Play; wallSpots.Clear(); }   // стандарт разыгран — время пошло
         passReceiver = receiver;
         passTimer = 2.5f;
+        TrackKick(kicker, receiver);
         // Твоя команда отдала пас — управление сразу переходит к адресату
         if (receiver != null && receiver.team == HumanTeam) controlled = receiver;   // и полевому, и вратарю
         // Соперник отдал пас/ударил — автосмена на того, кто лучше успевает к мячу
@@ -613,9 +644,115 @@ public class MatchManager : MonoBehaviour
         else if (kicker.role == Role.Keeper && kicker == controlled) autoSwitchAt = Time.time + 0.15f;
     }
 
+    // ------------------------------------------------------------ статистика
+
+    /// <summary>Пас партнёру — попытка паса; удар в сторону ворот — удар (в створ — если летит в рамку).</summary>
+    void TrackKick(Player kicker, Player receiver)
+    {
+        int t = (int)kicker.team;
+        pendingPass = null;
+        if (receiver != null && receiver != kicker && receiver.team == kicker.team)
+        {
+            Stats.passes[t]++;
+            pendingPass = kicker;
+            return;
+        }
+        if (!IsShotAt(kicker.team, out bool onTarget)) return;
+        Stats.shots[t]++;
+        if (onTarget) Stats.onTarget[t]++;
+        shotBy = kicker;
+        shotTime = Time.time;
+        shotOnTarget = onTarget;
+        shotSaved = false;
+    }
+
+    /// <summary>Мяч только что пробит: летит ли он к чужим воротам (±3 м от штанг) и попадёт ли в рамку.</summary>
+    bool IsShotAt(Team team, out bool onTarget)
+    {
+        onTarget = false;
+        Vector3 p = ball.Body.position, v = ball.Body.linearVelocity;
+        float dx = OwnGoalX(Player.Opp(team)) - p.x;
+        if (Mathf.Abs(dx) > 28f || v.x * dx <= 0f || new Vector2(v.x, v.z).magnitude < 10f) return false;
+        float t = dx / v.x;
+        float z = p.z + v.z * t, y = p.y + v.y * t - 4.9f * t * t;
+        if (Mathf.Abs(z) > goalWidth * 0.5f + 3f) return false;
+        onTarget = Mathf.Abs(z) < goalWidth * 0.5f && y < goalHeight;
+        return true;
+    }
+
+    /// <summary>Закрученный или срикошетивший удар мог «уйти» в створ позже — засчитываем, когда его спас вратарь или он влетел.</summary>
+    void ConfirmOnTarget()
+    {
+        if (shotBy == null || shotOnTarget) return;
+        shotOnTarget = true;
+        Stats.onTarget[(int)shotBy.team]++;
+    }
+
+    void TrackPossession(Player owner)
+    {
+        possTeam = owner.team;
+        if (pendingPass != null)
+        {
+            if (owner.team == pendingPass.team && owner != pendingPass)
+            {
+                Stats.passesDone[(int)owner.team]++;
+                assistFrom = pendingPass;
+                assistTo = owner;
+            }
+            pendingPass = null;
+        }
+        if (assistTo != null && assistTo.team != owner.team) assistFrom = assistTo = null;   // соперник отобрал — голевой паса не будет
+        if (shotBy != null)
+        {
+            // Вратарь поймал удар соперника — сейв
+            if (owner.role == Role.Keeper && owner.team != shotBy.team && Time.time - shotTime < 3f) OnSave(owner);
+            shotBy = null;
+        }
+    }
+
+    /// <summary>Сейв вратаря (поймал или отбил удар). Отбитый мяч, влетевший потом в ворота, — гол автора удара.</summary>
+    public void OnSave(Player keeper)
+    {
+        if (shotSaved || shotBy == null || shotBy.team == keeper.team) return;
+        shotSaved = true;
+        ConfirmOnTarget();
+        Stats.saves[(int)keeper.team]++;
+        GameAudio.CrowdOh();
+    }
+
+    GoalEvent RecordGoal(Team scoring)
+    {
+        Player s = ball.lastTouch;
+        bool recentShot = shotBy != null && shotBy.team == scoring && Time.time - shotTime < 4f;
+        bool own = false;
+        if (s == null) s = recentShot ? shotBy : null;
+        else if (s.team != scoring)
+        {
+            if (recentShot) s = shotBy;          // рикошет от защитника или вратаря — гол автора удара
+            else own = true;
+        }
+        if (!own)
+        {
+            if (recentShot && s == shotBy) ConfirmOnTarget();
+            else { Stats.shots[(int)scoring]++; Stats.onTarget[(int)scoring]++; }   // «закатил» без удара — тоже удар в створ
+        }
+        var g = new GoalEvent
+        {
+            team = scoring,
+            scorer = s != null ? s.displayName : "—",
+            own = own,
+            assist = !own && s != null && assistTo == s && assistFrom != null && assistFrom != s ? assistFrom.displayName : null,
+            time = Mathf.Clamp(matchDuration - timeLeft, 0f, matchDuration),
+        };
+        Stats.goals.Add(g);
+        shotBy = assistFrom = assistTo = pendingPass = null;
+        return g;
+    }
+
     public void OnPossession(Player owner)
     {
         passReceiver = null;
+        TrackPossession(owner);
         if (owner.team == HumanTeam) controlled = owner;   // мяч у своего (и у вратаря) — управляешь им
         else if (owner.team != HumanTeam && Profile.Current.autoSwitch == 0) ScheduleAutoSwitch(false, false);
     }
@@ -749,6 +886,7 @@ public class MatchManager : MonoBehaviour
     public void OnFoul(Player fouler, Player victim)
     {
         if (phase != Phase.Play) return;
+        Stats.fouls[(int)fouler.team]++;
         Team defending = fouler.team;
         Vector3 spot = ClampToField(victim.Position, 0.5f);
         float gx = OwnGoalX(defending);
@@ -757,6 +895,7 @@ public class MatchManager : MonoBehaviour
             StopForSetPiece(SetPieceType.Penalty, victim.team, new Vector3(gx - Mathf.Sign(gx) * 4.5f, 0f, 0f), 1.5f, "ПЕНАЛЬТИ");
         else
             StopForSetPiece(SetPieceType.FreeKick, victim.team, spot, 1.2f, "Фол! Штрафной");
+        GameAudio.Whistle(inBox ? 1 : 0);
         Shake(0.1f);
     }
 
@@ -1325,6 +1464,11 @@ public class MatchManager : MonoBehaviour
         {
             UI.Box(new Rect(0, 1080 * 0.36f, w, 110), new Color(0f, 0f, 0f, 0.55f));
             UI.Label(new Rect(0, 1080 * 0.36f, w, 110), banner.ToUpper(), UI.Head, 64, Color.white, TextAnchor.MiddleCenter);
+            if (!string.IsNullOrEmpty(bannerSub))
+            {
+                UI.Box(new Rect(0, 1080 * 0.36f + 110, w, 44), new Color(0f, 0f, 0f, 0.45f));
+                UI.Label(new Rect(0, 1080 * 0.36f + 110, w, 44), bannerSub, UI.Body, 28, UI.Lime, TextAnchor.MiddleCenter);
+            }
         }
         if (phase == Phase.Over)
             UI.Label(new Rect(0, 1080 * 0.36f + 110, w, 40), "Возврат в меню…  (A / Enter — сразу)", UI.Body, 22, Color.white, TextAnchor.MiddleCenter);

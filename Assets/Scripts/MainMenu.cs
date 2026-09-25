@@ -251,6 +251,7 @@ public class MainMenu : MonoBehaviour
 
         bool clicked = GUI.Button(r, GUIContent.none, GUIStyle.none);
         if (activate && id == focus && e.type == EventType.Repaint) { activate = false; clicked = true; }
+        if (clicked) GameAudio.Click();
         return clicked;
     }
 
@@ -767,22 +768,24 @@ public class MainMenu : MonoBehaviour
         { p.autoSwitch = (p.autoSwitch + 1) % Catalog.AutoSwitchModes.Length; p.Save(); }
         if (PanelButton(Row(ref y), $"ПОДСКАЗКИ УПРАВЛЕНИЯ:  {(p.showHints ? "ВКЛ" : "ВЫКЛ")}"))
         { p.showHints = !p.showHints; p.Save(); }
+        if (PanelButton(Row(ref y), $"ЗВУК:  {(p.soundVolume == 0 ? "ВЫКЛ" : p.soundVolume * 25 + "%")}"))
+        { p.soundVolume = (p.soundVolume + 1) % 5; p.Save(); }
         if (PanelButton(Row(ref y), $"ПОЛНЫЙ ЭКРАН:  {(Screen.fullScreen ? "ВКЛ" : "ВЫКЛ")}"))
             Screen.fullScreen = !Screen.fullScreen;
         if (PanelButton(Row(ref y), "УПРАВЛЕНИЕ (ГЕЙМПАД И КЛАВИАТУРА)")) SetPage(Page.Controls);
         if (PanelButton(Row(ref y), "<color=#FF8A3D>СБРОСИТЬ ПРОГРЕСС</color>")) SetPage(Page.ResetConfirm);
 
-        UI.Label(new Rect(60, 900, 1700, 36), "Ввод: " + GameInput.BackendInfo, UI.Body, 22,
+        UI.Label(new Rect(60, 918, 1700, 32), "Ввод: " + GameInput.BackendInfo, UI.Body, 22,
                  GameInput.FullGamepadSupport ? UI.Muted : UI.Orange, TextAnchor.MiddleLeft);
-        UI.Label(new Rect(60, 936, 1700, 36), "Проверка курков (нажми): " + GameInput.TriggerDebug, UI.Body, 22, Color.white, TextAnchor.MiddleLeft);
+        UI.Label(new Rect(60, 950, 1700, 32), "Проверка курков (нажми): " + GameInput.TriggerDebug, UI.Body, 22, Color.white, TextAnchor.MiddleLeft);
 
         if (BackButton()) SetPage(Page.Main);
     }
 
     static Rect Row(ref float y)
     {
-        Rect r = new Rect(60, y, 1000, 76);
-        y += 90;
+        Rect r = new Rect(60, y, 1000, 70);
+        y += 80;
         return r;
     }
 
@@ -871,6 +874,7 @@ public class MainMenu : MonoBehaviour
     void DrawResult(MatchManager mm)
     {
         var r = mm.LastResult;
+        if (r.stats != null) { DrawMatchResult(mm, r); return; }
         float w = UI.Width;
         UI.Box(new Rect(0, 0, w, 1080), new Color(0.02f, 0.03f, 0.05f, 0.8f));
         Rect card = new Rect(w * 0.5f - 520, 200, 1040, 640);
@@ -891,6 +895,89 @@ public class MainMenu : MonoBehaviour
         }
     }
 
+    /// <summary>Итог матча: счёт, авторы голов, статистика, награды.</summary>
+    void DrawMatchResult(MatchManager mm, MatchResult r)
+    {
+        float w = UI.Width;
+        UI.Box(new Rect(0, 0, w, 1080), new Color(0.02f, 0.03f, 0.05f, 0.85f));
+        Rect card = new Rect(w * 0.5f - 560, 40, 1120, 1000);
+        UI.Box(card, new Color(0.1f, 0.12f, 0.15f, 0.97f));
+        UI.Box(new Rect(card.x, card.y, card.width, 10), r.good ? UI.Lime : UI.Orange);
+        UI.Label(new Rect(card.x, card.y + 20, card.width, 80), r.title, UI.Head, 70, r.good ? UI.Lime : UI.Orange, TextAnchor.MiddleCenter);
+        UI.Label(new Rect(card.x, card.y + 100, card.width, 110), r.score, UI.Head, 100, Color.white, TextAnchor.MiddleCenter);
+        UI.Label(new Rect(card.x + 40, card.y + 100, card.width * 0.5f - 160, 110), Profile.Current.clubName.ToUpper(), UI.Head, 30, Color.white, TextAnchor.MiddleRight);
+        UI.Label(new Rect(card.x + card.width * 0.5f + 120, card.y + 100, card.width * 0.5f - 160, 110), Catalog.OpponentClub.ToUpper(), UI.Head, 30, Color.white, TextAnchor.MiddleLeft);
+
+        float y = card.y + 220;
+        y += DrawGoals(new Rect(card.x + 60, y, card.width - 120, 180), r.stats) + 20;
+        DrawStats(new Rect(card.x + 140, y, card.width - 280, 8 * 42), r.stats);
+        y += 8 * 42 + 14;
+        for (int i = 0; i < r.lines.Count; i++, y += 34)
+            UI.Label(new Rect(card.x, y, card.width, 34), r.lines[i], UI.Body, 24, Color.white, TextAnchor.MiddleCenter);
+
+        float by = card.yMax - 100;
+        if (LimeButton(new Rect(card.x + 120, by, 400, 76), "В МЕНЮ", 38)) mm.LastResult = null;
+        if (PanelButton(new Rect(card.xMax - 520, by, 400, 76), "СЫГРАТЬ ЕЩЁ", 38))
+        {
+            mm.LastResult = null;
+            mm.StartMatch(MatchMode.Normal);
+        }
+    }
+
+    /// <summary>Голы: свои — слева, соперника — справа (минута, автор, в скобках — голевой пас). Возвращает высоту блока.</summary>
+    static float DrawGoals(Rect r, MatchStats s)
+    {
+        const float line = 30f;
+        int max = (int)(r.height / line);
+        if (s.goals.Count == 0)
+        {
+            UI.Label(new Rect(r.x, r.y, r.width, line), "Голов нет", UI.Body, 22, UI.Muted, TextAnchor.MiddleCenter);
+            return line;
+        }
+        int left = 0, right = 0;
+        foreach (var g in s.goals)
+        {
+            bool home = g.team == MatchManager.HumanTeam;
+            int row = home ? left++ : right++;
+            if (row >= max) continue;
+            string who = g.scorer + (g.own ? " (автогол)" : g.assist != null ? $"  <color=#FFFFFF99>(пас: {g.assist})</color>" : "");
+            string text = home ? $"{MatchStats.Clock(g.time)}   {who}" : $"{who}   {MatchStats.Clock(g.time)}";
+            UI.Label(new Rect(home ? r.x : r.center.x + 20, r.y + row * line, r.width * 0.5f - 20, line), text, UI.Body, 22,
+                     home ? UI.Lime : new Color(0.55f, 0.7f, 1f), home ? TextAnchor.MiddleLeft : TextAnchor.MiddleRight);
+        }
+        return Mathf.Min(Mathf.Max(left, right), max) * line;
+    }
+
+    /// <summary>Таблица статистики: слева — твоя команда, справа — соперник, под каждой строкой — полоска соотношения.</summary>
+    static void DrawStats(Rect r, MatchStats s)
+    {
+        Team home = MatchManager.HumanTeam, away = Player.Opp(home);
+        int h = (int)home, a = (int)away;
+        float rowH = r.height / 8f, y = r.y;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Владение мячом", s.PossessionPct(home), s.PossessionPct(away), "%"); y += rowH;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Удары", s.shots[h], s.shots[a]); y += rowH;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Удары в створ", s.onTarget[h], s.onTarget[a]); y += rowH;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Точные пасы", s.passesDone[h], s.passesDone[a], "",
+                $"{s.passesDone[h]}/{s.passes[h]}", $"{s.passesDone[a]}/{s.passes[a]}"); y += rowH;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Точность пасов", s.PassPct(home), s.PassPct(away), "%"); y += rowH;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Сейвы", s.saves[h], s.saves[a]); y += rowH;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Угловые", s.corners[h], s.corners[a]); y += rowH;
+        StatRow(new Rect(r.x, y, r.width, rowH), "Фолы", s.fouls[h], s.fouls[a]);
+    }
+
+    static void StatRow(Rect r, string name, int a, int b, string unit = "", string ta = null, string tb = null)
+    {
+        float th = r.height - 12f;
+        UI.Label(new Rect(r.x, r.y, 160, th), ta ?? a + unit, UI.Head, 28, a > b ? UI.Lime : Color.white, TextAnchor.MiddleLeft);
+        UI.Label(new Rect(r.xMax - 160, r.y, 160, th), tb ?? b + unit, UI.Head, 28, b > a ? UI.Lime : Color.white, TextAnchor.MiddleRight);
+        UI.Label(new Rect(r.x, r.y, r.width, th), name, UI.Body, 22, UI.Muted, TextAnchor.MiddleCenter);
+        float share = a + b > 0 ? (float)a / (a + b) : 0.5f;
+        float by = r.y + th + 1f;
+        UI.Box(new Rect(r.x, by, r.width, 5), new Color(1f, 1f, 1f, 0.1f));
+        UI.Box(new Rect(r.x, by, r.width * share, 5), UI.Lime);
+        UI.Box(new Rect(r.x + r.width * share, by, r.width * (1f - share), 5), new Color(0.35f, 0.55f, 1f));
+    }
+
     void DrawPause(MatchManager mm)
     {
         if (pauseControls) { DrawControls(Page.Main); return; }
@@ -908,5 +995,15 @@ public class MainMenu : MonoBehaviour
         y += 80;
         if (Button(new Rect(60, y, 600, 70), "ВЫЙТИ В МЕНЮ", UI.Head, 60, Color.white)) mm.QuitToMenu();
         UI.Label(new Rect(60, 700, 900, 40), "Выход в меню во время матча — без наград.", UI.Body, 24, UI.Muted, TextAnchor.MiddleLeft);
+
+        // Справа — статистика матча
+        if (mm.IsPractice) return;
+        Rect panel = new Rect(w - 760, 180, 700, 600);
+        UI.Box(panel, new Color(0.1f, 0.12f, 0.15f, 0.92f));
+        UI.Box(new Rect(panel.x, panel.y, panel.width, 6), UI.Lime);
+        UI.Label(new Rect(panel.x, panel.y + 16, panel.width, 50), "СТАТИСТИКА", UI.Head, 44, Color.white, TextAnchor.MiddleCenter);
+        UI.Label(new Rect(panel.x + 30, panel.y + 70, panel.width - 60, 36), Profile.Current.clubName, UI.Body, 22, UI.Lime, TextAnchor.MiddleLeft);
+        UI.Label(new Rect(panel.x + 30, panel.y + 70, panel.width - 60, 36), Catalog.OpponentClub, UI.Body, 22, new Color(0.55f, 0.7f, 1f), TextAnchor.MiddleRight);
+        DrawStats(new Rect(panel.x + 30, panel.y + 115, panel.width - 60, 8 * 57), mm.Stats);
     }
 }

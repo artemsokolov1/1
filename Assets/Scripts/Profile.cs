@@ -35,6 +35,7 @@ public class Profile
     public int cameraMode = 0;                            // 0 — умная трансляция, 1 — широкая, 2 — изометрия
     public int autoSwitch = 0;                            // 0 — авто, 1 — мячи в воздухе и ничьи, 2 — вручную
     public bool showHints = true;
+    public int soundVolume = 3;                           // 0 — выкл … 4 — 100%
 
     // испытания и тренировки
     public int[] challengeProgress = new int[Catalog.Challenges.Length];
@@ -85,6 +86,7 @@ public class Profile
         difficulty = Mathf.Clamp(difficulty, 0, 2);
         cameraMode = Mathf.Clamp(cameraMode, 0, Catalog.CameraModes.Length - 1);
         autoSwitch = Mathf.Clamp(autoSwitch, 0, Catalog.AutoSwitchModes.Length - 1);
+        soundVolume = Mathf.Clamp(soundVolume, 0, 4);
     }
 
     public int ChallengesReady()
